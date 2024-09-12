@@ -11,7 +11,8 @@ class UserState(MessagesState):
     user_profile_status: bool
     agent_introduction_status: bool
     profile_info_collected: bool
-    profile_history: Annotated[List[Dict[str, str]], "profile_history"] = []
+    profile_history: List[Dict[str, str]] = []
+    current_question: str = ""
 
 # Define the state with a built-in messages key
 class BiographerState(MessagesState):
@@ -67,7 +68,7 @@ def profile_introduction_node(state: UserState):
         "To help me write your biography effectively, I'd like to start by asking you some general questions "
         "about your life. This will give me a better understanding of your background and experiences. "
         "With this information, I'll be able to ask more appropriate and insightful questions as we delve "
-        "deeper into your life story. Are you ready to begin with some general questions about yourself?"
+        "deeper into your life story."
     )
     
     return {
@@ -79,26 +80,96 @@ def profile_introduction_node(state: UserState):
 
 def profile_node(state: UserState):
     print(f"profile_node received state: {state}")
+    print("Conversation history in profile_node:")
+    for msg in state["messages"]:
+        print(f"  {type(msg).__name__}: {msg.content}")
     
-    # Generate a question using the LLM
-    prompt = "As a helpful biographer, ask a general question to gather information about someone's life for their biography."
-    response = llm.invoke(prompt)
-    question = response.content
+    conversation_history = state["messages"]
+    last_question = state.get("current_question", "")
+    last_answer = conversation_history[-1].content if conversation_history and isinstance(conversation_history[-1], HumanMessage) else ""
+    
+    print(f"Last question: {last_question}")
+    print(f"Last answer: {last_answer}")
+    
+    # Update the profile history with the previous question-answer pair
+    profile_history = state.get("profile_history", [])
+    if last_question and last_answer:
+        # Update the last item in the profile history with the answer
+        if profile_history and profile_history[-1]["question"] == last_question:
+            profile_history[-1]["answer"] = last_answer
+            print(f"Updated last question in profile history: {profile_history[-1]}")
+    
+    print(f"Updated profile history: {profile_history}")
+    
+    # Check if name has been asked
+    name_asked = any("name" in qa["question"].lower() for qa in profile_history)
+    
+    if not name_asked:
+        question = "What is your name?"
+    else:
+        # Prepare the profile history for the prompt
+        history_str = "\n".join([f"Q: {qa['question']}\nA: {qa['answer']}" for qa in profile_history])
+        
+        # Generate a new question using the LLM
+        prompt = f"""As a helpful biographer, ask a new question to gather information about someone's life for their biography.
+        
+        Some good topics to cover are: birth place and date, upbringing, places lived, education, career history, current occupation, hobbies, and significant life events. If the user seems hesitant to answer, ask them if they would like to talk about something else.
+        
+        Please ask a new question that hasn't been asked before. Here are the questions and answers you've already collected:
+
+        {history_str}
+
+        New question:"""
+        
+        response = llm.invoke(prompt)
+        question = response.content.strip()
     
     print(f"Generated question: {question}")
     
-    # Return the state with the question and update the messages
+    # Add the new question to the profile history
+    profile_history.append({
+        "question": question,
+        "answer": ""  # This will be filled when the user responds
+    })
+    
+    # Return the state with the new question and update the messages
     return {
         "messages": state["messages"] + [AIMessage(content=question)],
         "current_question": question,
-        "awaiting_user_response": True
+        "awaiting_user_response": True,
+        "profile_history": profile_history
     }
 
-def profile_question_validation_node(state: MessagesState):
+def profile_question_validation_node(state: UserState):
     print(f"profile_question_validation_node received state: {state}")
+    print("Conversation history in profile_question_validation_node:")
+    for msg in state["messages"]:
+        print(f"  {type(msg).__name__}: {msg.content}")
     
-    last_question = state.get("current_question")
-    last_answer = state["messages"][-1].content if state["messages"] else ""
+    conversation_history = state["messages"]
+    
+    # Find the last AI message (question) and Human message (answer)
+    last_ai_message = next((msg for msg in reversed(conversation_history) if isinstance(msg, AIMessage)), None)
+    last_human_message = next((msg for msg in reversed(conversation_history) if isinstance(msg, HumanMessage)), None)
+    
+    if last_ai_message and last_human_message:
+        last_question = last_ai_message.content
+        last_answer = last_human_message.content
+        
+        print(f"Last question: {last_question}")
+        print(f"Last answer: {last_answer}")
+        
+        # Update the profile history
+        profile_history = state.get("profile_history", [])
+        profile_history.append({
+            "question": last_question,
+            "answer": last_answer
+        })
+        
+        print(f"Updated profile history: {profile_history}")
+        
+        # Update the state with the new profile history
+        state["profile_history"] = profile_history
     
     # Determine if a follow-up question is appropriate
     prompt = f"""Based on the following question and answer, determine if a follow-up question would be appropriate to extend the conversation and gather more information about the user's life story. 
@@ -112,30 +183,61 @@ def profile_question_validation_node(state: MessagesState):
     decision = response.content.strip().lower()
     
     if "follow up" in decision:
-        return {
-            "messages": state["messages"],
-            "next_step": "Profile Follow Up"
-        }
+        next_step = "Profile Follow Up"
     else:
-        return {
-            "messages": state["messages"],
-            "next_step": "Profile Completion Check"
-        }
+        next_step = "Profile Completion Check"
+    
+    print(f"Decision: {decision}, Next step: {next_step}")  # Add this line for debugging
+    
+    return {
+        "messages": state["messages"],
+        "next_step": next_step
+    }
 
 def next_step(state):
-    return state.get("next_step", "Profile Completion Check")
+    decision = state.get("next_step", "Profile Completion Check")
+    print(f"Next step decision: {decision}")  # Add this line for debugging
+    return decision
 
 def profile_follow_up_node(state: UserState):
     print(f"profile_follow_up_node received state: {state}")
+    print("Conversation history in profile_follow_up_node:")
+    for msg in state["messages"]:
+        print(f"  {type(msg).__name__}: {msg.content}")
     
     conversation_history = state["messages"]
     last_question = state.get("current_question", "")
-    last_answer = conversation_history[-1].content if conversation_history else ""
+    last_answer = next((msg.content for msg in reversed(conversation_history) if isinstance(msg, HumanMessage)), "")
     
-    prompt = f"""As a conversational agent interested in the user's life story, generate a follow-up question based on the previous question and answer. The question should logically extend the conversation and show genuine interest in learning more about the user.
+    print(f"Last question: {last_question}")
+    print(f"Last answer: {last_answer}")
+    
+    # Update the profile history with the previous question-answer pair
+    profile_history = state.get("profile_history", [])
+    if last_question and last_answer:
+        # Update the last item in the profile history or add a new one
+        if profile_history and profile_history[-1]["question"] == last_question:
+            profile_history[-1]["answer"] = last_answer
+        else:
+            profile_history.append({
+                "question": last_question,
+                "answer": last_answer
+            })
+        print(f"Updated profile history item: {profile_history[-1]}")
+    
+    print(f"Updated profile history: {profile_history}")
+    
+    # Prepare the profile history for the prompt
+    history_str = "\n".join([f"Q: {qa['question']}\nA: {qa['answer']}" for qa in profile_history])
+    
+    # Generate a new question using the LLM
+    prompt = f"""As a conversational agent interested in the user's life story, generate a follow-up question based on the previous question and answer. The question should logically extend the conversation and show genuine interest in learning more about the user. Avoid exclamation marks and excessive enthusiasm.
 
 Previous question: {last_question}
 User's answer: {last_answer}
+
+Here's the conversation history so far:
+{history_str}
 
 Follow-up question:"""
     
@@ -148,47 +250,26 @@ Follow-up question:"""
     return {
         "messages": updated_messages,
         "current_question": follow_up_question,
-        "awaiting_user_response": True
+        "awaiting_user_response": True,
+        "profile_history": profile_history
     }
-
-def human_feedback(state: UserState) -> UserState:
-    # This function will be interrupted by LangGraph Studio
-    # The user's response will be added to the state here
-    user_response = input("User: ")  # This is a placeholder for LangGraph Studio interruption
-    state["messages"].append(HumanMessage(content=user_response))
-    state["awaiting_user_response"] = False
-    return state
 
 def profile_completion_check_node(state: UserState):
     print(f"profile_completion_check_node received state: {state}")
     profile_history = state.get("profile_history", [])
     
-    # Check if we have a pending question and user response
-    if state.get("current_question") and state.get("awaiting_user_response") is False:
-        last_question = state["current_question"]
-        last_answer = state["messages"][-1].content if state["messages"] else ""
-        
-        # Append the question-answer pair to the profile history
-        profile_history.append({
-            "question": last_question,
-            "answer": last_answer
-        })
-        
-        # Clear the current question
-        state["current_question"] = None
-    
-    if len(profile_history) >= 3:  # Collect at least 3 pieces of information
+    # Check if we have enough information (e.g., at least 3 pieces of information)
+    if len(profile_history) >= 3:
         return {
             "user_profile_status": True,
             "profile_info_collected": True,
-            "profile_history": profile_history,
-            "messages": state["messages"] + [SystemMessage(content="Profile validated.")]
+            "next_step": "Profile Check Node"
         }
     else:
-        # If we don't have enough information, go back to the profile node
         return {
-            "profile_history": profile_history,
-            "messages": state["messages"] + [SystemMessage(content="Continuing profile collection.")]
+            "user_profile_status": False,
+            "profile_info_collected": False,
+            "next_step": "Profile Node"
         }
 
 def questioning_node(state: BiographerState):
@@ -258,7 +339,6 @@ graph.add_node("Profile Introduction Node", profile_introduction_node)
 graph.add_node("Profile Node", profile_node)
 graph.add_node("Profile Question Validation", profile_question_validation_node)
 graph.add_node("Profile Follow Up", profile_follow_up_node)
-graph.add_node("Human Feedback", human_feedback)
 graph.add_node("Profile Completion Check", profile_completion_check_node)
 graph.add_node("Questioning Node", questioning_node)
 graph.add_node("contact_check_node", contact_check_node)
@@ -312,17 +392,18 @@ graph.add_conditional_edges(
     }
 )
 
-graph.add_edge("Profile Follow Up", "Human Feedback")
-graph.add_edge("Profile Completion Check", "Human Feedback")
-graph.add_edge("Human Feedback", "Profile Question Validation")
+graph.add_edge("Profile Follow Up", "Profile Question Validation")
+
+
 graph.add_conditional_edges(
-    "Profile Question Validation",
-    lambda x: "Profile Node" if not x.get("profile_info_collected") else "Questioning Node",
+    "Profile Completion Check",
+    lambda x: x["next_step"],
     {
-        "Profile Node": "Profile Node",
-        "Questioning Node": "Questioning Node"
+        "Profile Check Node": "Profile Check Node",
+        "Profile Node": "Profile Node"
     }
 )
+
 graph.add_edge("Questioning Node", "contact_check_node")
 graph.add_conditional_edges(
     "contact_check_node",
@@ -367,5 +448,5 @@ graph.add_edge("congratulations_node", END)
 # Set the entry point before compiling
 graph.set_entry_point("User Status Node")
 
-# Compile the graph with an interrupt before the Human Feedback node
-app = graph.compile(interrupt_before=["Human Feedback"])
+# Compile the graph
+app = graph.compile()

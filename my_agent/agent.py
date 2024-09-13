@@ -1,10 +1,46 @@
 from langgraph.graph import StateGraph, MessagesState, END
-from typing import List, Dict, Any, Literal, Union, Annotated
+from typing import List, Dict, Any, Literal, Union, Annotated, Set
 from langchain_core.messages import AIMessage, SystemMessage, HumanMessage
 from langchain_openai import ChatOpenAI
 
 # Initialize the OpenAI model
 llm = ChatOpenAI(model="gpt-4", temperature=0)
+
+# Define all profile questions globally
+topics_and_questions = [
+    {"topic": "Personal Background and Identity", "question": "What's your full name? Do you have any nicknames?"},
+    {"topic": "Personal Background and Identity", "question": "When and where were you born?"},
+    {"topic": "Personal Background and Identity", "question": "What is your nationality and ethnicity?"},
+    {"topic": "Personal Background and Identity", "question": "What are your gender and preferred pronouns?"},
+    {"topic": "Personal Background and Identity", "question": "Which languages do you speak?"},
+    {"topic": "Family and Relationships", "question": "Can you tell me about your family history?"},
+    {"topic": "Family and Relationships", "question": "Are you married or in a relationship? Do you have any children?"},
+    {"topic": "Family and Relationships", "question": "Do you have any siblings or extended family members you're close to?"},
+    {"topic": "Family and Relationships", "question": "Who are some key people in your life, like friends or mentors?"},
+    {"topic": "Education and Professional Life", "question": "What is your educational background? Where did you go to school?"},
+    {"topic": "Education and Professional Life", "question": "Can you share about your professional career and accomplishments?"},
+    {"topic": "Education and Professional Life", "question": "Have you been involved in volunteer work or community activities?"},
+    {"topic": "Education and Professional Life", "question": "Who have been key mentors or influencers in your professional development?"},
+    {"topic": "Health and Well-being", "question": "Can you share about your physical and mental health history?"},
+    {"topic": "Health and Well-being", "question": "Have you experienced any major illnesses or health challenges? If so, how did they impact your life?"},
+    {"topic": "Health and Well-being", "question": "What lifestyle choices have you made related to health, such as diet or exercise?"},
+    {"topic": "Major Life Events and Experiences", "question": "Can you share about any defining moments in your life, such as childhood, adolescence, or adulthood?"},
+    {"topic": "Major Life Events and Experiences", "question": "Have you faced any personal challenges? How did you overcome them?"},
+    {"topic": "Major Life Events and Experiences", "question": "Can you share about any impactful historical events you've experienced, such as wars or political movements?"},
+    {"topic": "Major Life Events and Experiences", "question": "What are your religious or spiritual beliefs?"},
+    {"topic": "Cultural and Social Environment", "question": "Can you share about your social class and economic background?"},
+    {"topic": "Cultural and Social Environment", "question": "How have cultural influences, such as art, music, or media, shaped your life?"},
+    {"topic": "Cultural and Social Environment", "question": "Have you moved to different geographical locations? If so, how did they impact your life?"},
+    {"topic": "Cultural and Social Environment", "question": "Can you share about the social or political context of the time in which you lived?"},
+    {"topic": "Hobbies, Interests, and Passions", "question": "What are your major hobbies and personal interests?"},
+    {"topic": "Hobbies, Interests, and Passions", "question": "Have you had any significant travel experiences? If so, what were they like?"},
+    {"topic": "Hobbies, Interests, and Passions", "question": "Are you a member of any organizations or clubs? If so, how have they influenced your life?"},
+    {"topic": "Hobbies, Interests, and Passions", "question": "Have you contributed to your community or society in any meaningful way, such as through activism or advocacy?"},
+    {"topic": "Aspirations, Values, and Legacy", "question": "What are your personal values and guiding principles?"},
+    {"topic": "Aspirations, Values, and Legacy", "question": "What are your life aspirations, whether fulfilled or unfulfilled?"},
+    {"topic": "Aspirations, Values, and Legacy", "question": "How do you reflect on your life achievements and regrets?"},
+    {"topic": "Aspirations, Values, and Legacy", "question": "How do you wish to be remembered?"},
+]
 
 # Define the state with a built-in `messages` key
 class UserState(MessagesState):
@@ -13,6 +49,9 @@ class UserState(MessagesState):
     profile_info_collected: bool
     profile_history: List[Dict[str, str]] = []
     current_question: str = ""
+    current_topic: str = ""
+    topics_covered: Set[str] = set()
+    follow_up_counts: Dict[str, int] = {}
 
 # Define the state with a built-in messages key
 class BiographerState(MessagesState):
@@ -68,7 +107,7 @@ def profile_introduction_node(state: UserState):
         "To help me write your biography effectively, I'd like to start by asking you some general questions "
         "about your life. This will give me a better understanding of your background and experiences. "
         "With this information, I'll be able to ask more appropriate and insightful questions as we delve "
-        "deeper into your life story. Because we're telling the story of your life, many of these questions will be personal. You don't need to answer anything that makes you uncomfortable and we can always skip questions or come back to them later. "
+        "deeper into your life story. You can take your time with this and come back at any time. Most people take a few days to get through all of these questions. Because we're telling the story of your life, many of these questions will be personal. You don't need to answer anything that makes you uncomfortable and we can always skip questions or come back to them later. Are you read to get started?"
     )
     
     return {
@@ -78,6 +117,42 @@ def profile_introduction_node(state: UserState):
         ]
     }
 
+# Define all profile questions globally
+topics_and_questions = [
+    {"topic": "Personal Background and Identity", "question": "What's your full name? Do you have any nicknames?"},
+    {"topic": "Personal Background and Identity", "question": "When and where were you born?"},
+    {"topic": "Personal Background and Identity", "question": "What is your nationality and ethnicity?"},
+    {"topic": "Personal Background and Identity", "question": "What are your gender and preferred pronouns?"},
+    {"topic": "Personal Background and Identity", "question": "Which languages do you speak?"},
+    {"topic": "Family and Relationships", "question": "Can you tell me about your family history?"},
+    {"topic": "Family and Relationships", "question": "Are you married or in a relationship? Do you have any children?"},
+    {"topic": "Family and Relationships", "question": "Do you have any siblings or extended family members you're close to?"},
+    {"topic": "Family and Relationships", "question": "Who are some key people in your life, like friends or mentors?"},
+    {"topic": "Education and Professional Life", "question": "What is your educational background? Where did you go to school?"},
+    {"topic": "Education and Professional Life", "question": "Can you share about your professional career and accomplishments?"},
+    {"topic": "Education and Professional Life", "question": "Have you been involved in volunteer work or community activities?"},
+    {"topic": "Education and Professional Life", "question": "Who have been key mentors or influencers in your professional development?"},
+    {"topic": "Health and Well-being", "question": "Can you share about your physical and mental health history?"},
+    {"topic": "Health and Well-being", "question": "Have you experienced any major illnesses or health challenges? If so, how did they impact your life?"},
+    {"topic": "Health and Well-being", "question": "What lifestyle choices have you made related to health, such as diet or exercise?"},
+    {"topic": "Major Life Events and Experiences", "question": "Can you share about any defining moments in your life, such as childhood, adolescence, or adulthood?"},
+    {"topic": "Major Life Events and Experiences", "question": "Have you faced any personal challenges? How did you overcome them?"},
+    {"topic": "Major Life Events and Experiences", "question": "Can you share about any impactful historical events you've experienced, such as wars or political movements?"},
+    {"topic": "Major Life Events and Experiences", "question": "What are your religious or spiritual beliefs?"},
+    {"topic": "Cultural and Social Environment", "question": "Can you share about your social class and economic background?"},
+    {"topic": "Cultural and Social Environment", "question": "How have cultural influences, such as art, music, or media, shaped your life?"},
+    {"topic": "Cultural and Social Environment", "question": "Have you moved to different geographical locations? If so, how did they impact your life?"},
+    {"topic": "Cultural and Social Environment", "question": "Can you share about the social or political context of the time in which you lived?"},
+    {"topic": "Hobbies, Interests, and Passions", "question": "What are your major hobbies and personal interests?"},
+    {"topic": "Hobbies, Interests, and Passions", "question": "Have you had any significant travel experiences? If so, what were they like?"},
+    {"topic": "Hobbies, Interests, and Passions", "question": "Are you a member of any organizations or clubs? If so, how have they influenced your life?"},
+    {"topic": "Hobbies, Interests, and Passions", "question": "Have you contributed to your community or society in any meaningful way, such as through activism or advocacy?"},
+    {"topic": "Aspirations, Values, and Legacy", "question": "What are your personal values and guiding principles?"},
+    {"topic": "Aspirations, Values, and Legacy", "question": "What are your life aspirations, whether fulfilled or unfulfilled?"},
+    {"topic": "Aspirations, Values, and Legacy", "question": "How do you reflect on your life achievements and regrets?"},
+    {"topic": "Aspirations, Values, and Legacy", "question": "How do you wish to be remembered?"},
+]
+
 def profile_node(state: UserState):
     print(f"profile_node received state: {state}")
     print("Conversation history in profile_node:")
@@ -85,60 +160,101 @@ def profile_node(state: UserState):
         print(f"  {type(msg).__name__}: {msg.content}")
     
     conversation_history = state["messages"]
-    last_question = state.get("current_question", "")
-    last_answer = conversation_history[-1].content if conversation_history and isinstance(conversation_history[-1], HumanMessage) else ""
-    
-    print(f"Last question: {last_question}")
-    print(f"Last answer: {last_answer}")
-    
-    # Update the profile history with the previous question-answer pair
-    profile_history = state.get("profile_history", [])
-    if last_question and last_answer:
-        # Update the last item in the profile history with the answer
-        if profile_history and profile_history[-1]["question"] == last_question:
-            profile_history[-1]["answer"] = last_answer
-            print(f"Updated last question in profile history: {profile_history[-1]}")
-    
-    print(f"Updated profile history: {profile_history}")
-    
-    # Check if name has been asked
-    name_asked = any("name" in qa["question"].lower() for qa in profile_history)
-    
-    if not name_asked:
-        question = "What is your name?"
-    else:
-        # Prepare the profile history for the prompt
-        history_str = "\n".join([f"Q: {qa['question']}\nA: {qa['answer']}" for qa in profile_history])
-        
-        # Generate a new question using the LLM
-        prompt = f"""You are a biographer with extensive experience writing best selling biographies of obscure subjects. You are working with a new subject and just getting to know then. Ask a specific and targeted question about the user's demographic profile so you have enough information to develop a writing plan for their biography. Only ask about one topic at a time. Good topics to cover are: birth place and date, family members, upbringing, family history, places lived, education, career history, current occupation, hobbies, and significant life events. If the question is open ended, provide an example answer. For example, if you ask about the user's family background, here's how you would ask, "User, please tell me about your family. For example, do you have any siblings?"
-        
-        Only ask a question that hasn't been asked before. Here are the questions and answers you've already collected:
+    last_message = conversation_history[-1] if conversation_history else None
 
-        {history_str}
+    # Initialize topics_covered and profile_history from state
+    topics_covered = set(state.get("topics_covered", []))
+    profile_history = state.get("profile_history", [])
+
+    # If waiting for user response
+    if state.get("awaiting_user_response", False) and last_message and isinstance(last_message, HumanMessage):
+        user_response = last_message.content
+        last_question = state.get("current_question", "")
+        last_topic = state.get("current_topic", "")
         
-        Use clear and concise language and write in a conversational tone. New question:"""
+        # Update profile history
+        if last_question:
+            profile_history.append({
+                "question": last_question,
+                "answer": user_response
+            })
+            print(f"Updated profile history: {profile_history}")
+    
+            # Optionally perform analysis
+            # ...
         
-        response = llm.invoke(prompt)
-        question = response.content.strip()
+        # Reset awaiting_user_response
+        state["awaiting_user_response"] = False
+
+    # Find the next unanswered question
+    next_question = None
+    for item in topics_and_questions:
+        if item["question"] not in {qa["question"] for qa in profile_history}:
+            next_question = item
+            break
+
+    if next_question:
+        # Rephrase the question
+        prompt = f"""Rephrase the following question in a conversational and natural way:
+
+Topic: {next_question['topic']}
+Question: {next_question['question']}
+
+Rephrased question:"""
+        try:
+            response = llm.invoke(prompt)
+            question = response.content.strip()
+        except Exception as e:
+            print(f"Error during LLM invocation for rephrasing: {e}")
+            question = next_question['question']
     
-    print(f"Generated question: {question}")
+        # Update state
+        state["current_question"] = next_question['question']
+        state["current_topic"] = next_question['topic']
+        state["awaiting_user_response"] = True
+
+        # Add to topics_covered
+        topics_covered.add(next_question['topic'])
     
-    # Add the new question to the profile history
-    profile_history.append({
-        "question": question,
-        "answer": ""  # This will be filled when the user responds
-    })
-    
-    # Return the state with the new question and update the messages
-    return {
-        "messages": state["messages"] + [AIMessage(content=question)],
-        "current_question": question,
-        "awaiting_user_response": True,
-        "profile_history": profile_history
-    }
- 
-def profile_question_validation_node(state: UserState):
+        # Append the question to messages
+        return {
+            "messages": state["messages"] + [AIMessage(content=question)],
+            "current_question": next_question['question'],
+            "current_topic": next_question['topic'],
+            "awaiting_user_response": True,
+            "profile_history": profile_history,
+            "topics_covered": list(topics_covered)
+        }
+    else:
+        # No more questions
+        closing_message = "Thank you for sharing so much about yourself. I feel like I know you better now."
+        return {
+            "messages": state["messages"] + [AIMessage(content=closing_message)],
+            "profile_history": profile_history,
+            "topics_covered": list(topics_covered)
+        }
+
+def profile_completion_check_node(state: UserState):
+    print(f"profile_completion_check_node received state: {state}")
+    profile_history = state.get("profile_history", [])
+    total_questions = len(topics_and_questions)
+
+    answered_questions = len(profile_history)
+    print(f"Total questions: {total_questions}")
+    print(f"Answered questions: {answered_questions}")
+
+    if answered_questions >= total_questions:
+        return {
+            "next_step": "Questioning Node",
+            "messages": state["messages"] + [SystemMessage(content="All profile questions have been answered.")]
+        }
+    else:
+        return {
+            "next_step": "Profile Node",
+            "messages": state["messages"]
+        }
+
+def profile_question_validation_node(state: dict):
     print(f"profile_question_validation_node received state: {state}")
     print("Conversation history in profile_question_validation_node:")
     for msg in state["messages"]:
@@ -146,47 +262,73 @@ def profile_question_validation_node(state: UserState):
     
     conversation_history = state["messages"]
     
-    # Find the last AI message (question) and Human message (answer)
+    # Safely retrieve the last AI and Human messages
     last_ai_message = next((msg for msg in reversed(conversation_history) if isinstance(msg, AIMessage)), None)
     last_human_message = next((msg for msg in reversed(conversation_history) if isinstance(msg, HumanMessage)), None)
     
-    if last_ai_message and last_human_message:
+    # Initialize variables
+    last_question = ""
+    last_answer = ""
+    
+    if last_ai_message:
         last_question = last_ai_message.content
+    if last_human_message:
         last_answer = last_human_message.content
-        
-        print(f"Last question: {last_question}")
-        print(f"Last answer: {last_answer}")
-        
-        # Update the profile history
-        profile_history = state.get("profile_history", [])
+    
+    if not last_question:
+        print("No last_question found. Skipping validation.")
+        # Handle the case where there is no last_question
+        return {
+            "messages": state["messages"],
+            "next_step": "Profile Node"  # Or any appropriate next step
+        }
+    
+    print(f"Last question: {last_question}")
+    print(f"Last answer: {last_answer}")
+    
+    # Update the profile history
+    profile_history = state.get("profile_history", [])
+    if last_question and last_answer:
         profile_history.append({
             "question": last_question,
             "answer": last_answer
         })
-        
         print(f"Updated profile history: {profile_history}")
         
         # Update the state with the new profile history
         state["profile_history"] = profile_history
     
     # Determine if a follow-up question is appropriate
-    prompt = f"""You are a biographer interviewing a subject so you can create a demographic profile. Here are the most recent question and answer:
-    Question: {last_question}
-    Answer: {last_answer}
+    prompt = f"""You are a biographer interviewing a subject to create a demographic profile. Here are the most recent question and answer:
+Question: {last_question}
+Answer: {last_answer}
+
+If the answer suggests an interesting area for further exploration, respond with 'Follow Up'.  
+Otherwise, respond with 'Complete'. 
+"""
     
-    If the answer satisfies the question, respond with 'Complete'. 
-    Otherwise, respond with 'Follow Up'. 
-    """
+    try:
+        analysis_response = llm.invoke(prompt)
+        decision = analysis_response.content.strip().lower()
+    except Exception as e:
+        print(f"Error during LLM invocation for validation: {e}")
+        decision = "complete"  # Default decision on error
     
-    response = llm.invoke(prompt)
-    decision = response.content.strip().lower()
+    current_topic = state.get("current_topic", "")
+    follow_up_counts = state.get("follow_up_counts", {})
+    follow_up_count = follow_up_counts.get(current_topic, 0)
     
-    if "follow up" in decision:
+    if "follow up" in decision and follow_up_count < 2:
         next_step = "Profile Follow Up"
     else:
         next_step = "Profile Completion Check"
     
-    print(f"Decision: {decision}, Next step: {next_step}")  # Add this line for debugging
+    print(f"Decision: {decision}, Next step: {next_step}")
+    
+    # Update follow_up_counts in the state
+    if "follow up" in decision:
+        follow_up_counts[current_topic] = follow_up_count + 1
+        state["follow_up_counts"] = follow_up_counts
     
     return {
         "messages": state["messages"],
@@ -241,8 +383,16 @@ Here's the conversation history so far:
 Use clear and concise language. Avoid exclamation marks and excessive enthusiasm. 
 Follow-up question:"""
     
-    response = llm.invoke(prompt)
-    follow_up_question = response.content.strip()
+    try:
+        follow_up_response = llm.invoke(prompt)
+        follow_up_question = follow_up_response.content.strip()
+    except Exception as e:
+        print(f"Error during LLM invocation for follow-up: {e}")
+        follow_up_question = "Can you tell me more about that?"
+    
+    # Increment the follow-up count for the current topic
+    current_topic = state.get("current_topic", "")
+    state.follow_up_counts[current_topic] = state.follow_up_counts.get(current_topic, 0) + 1
     
     # Append the agent's question to the conversation history
     updated_messages = state["messages"] + [AIMessage(content=follow_up_question)]
@@ -251,25 +401,28 @@ Follow-up question:"""
         "messages": updated_messages,
         "current_question": follow_up_question,
         "awaiting_user_response": True,
-        "profile_history": profile_history
+        "profile_history": profile_history,
+        "follow_up_counts": state.follow_up_counts
     }
 
-def profile_completion_check_node(state: UserState):
+def profile_completion_check_node(state: dict):
     print(f"profile_completion_check_node received state: {state}")
     profile_history = state.get("profile_history", [])
-    
-    # Check if we have enough information (e.g., at least 3 pieces of information)
-    if len(profile_history) >= 3:
+    total_questions = len(topics_and_questions)  # Ensure 'topics_and_questions' is accessible here
+
+    answered_questions = len(profile_history)
+    print(f"Total questions: {total_questions}")
+    print(f"Answered questions: {answered_questions}")
+
+    if answered_questions >= total_questions:
         return {
-            "user_profile_status": True,
-            "profile_info_collected": True,
-            "next_step": "Profile Check Node"
+            "next_step": "Questioning Node",
+            "messages": state["messages"] + [SystemMessage(content="All profile questions have been answered.")]
         }
     else:
         return {
-            "user_profile_status": False,
-            "profile_info_collected": False,
-            "next_step": "Profile Node"
+            "next_step": "Profile Node",
+            "messages": state["messages"]
         }
 
 def questioning_node(state: BiographerState):
@@ -395,11 +548,12 @@ graph.add_conditional_edges(
 graph.add_edge("Profile Follow Up", "Profile Question Validation")
 
 
+# Update edges after Profile Completion Check Node
 graph.add_conditional_edges(
     "Profile Completion Check",
     lambda x: x["next_step"],
     {
-        "Profile Check Node": "Profile Check Node",
+        "Questioning Node": "Questioning Node",
         "Profile Node": "Profile Node"
     }
 )

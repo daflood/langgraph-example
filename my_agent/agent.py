@@ -117,42 +117,6 @@ def profile_introduction_node(state: UserState):
         ]
     }
 
-# Define all profile questions globally
-topics_and_questions = [
-    {"topic": "Personal Background and Identity", "question": "What's your full name? Do you have any nicknames?"},
-    {"topic": "Personal Background and Identity", "question": "When and where were you born?"},
-    {"topic": "Personal Background and Identity", "question": "What is your nationality and ethnicity?"},
-    {"topic": "Personal Background and Identity", "question": "What are your gender and preferred pronouns?"},
-    {"topic": "Personal Background and Identity", "question": "Which languages do you speak?"},
-    {"topic": "Family and Relationships", "question": "Can you tell me about your family history?"},
-    {"topic": "Family and Relationships", "question": "Are you married or in a relationship? Do you have any children?"},
-    {"topic": "Family and Relationships", "question": "Do you have any siblings or extended family members you're close to?"},
-    {"topic": "Family and Relationships", "question": "Who are some key people in your life, like friends or mentors?"},
-    {"topic": "Education and Professional Life", "question": "What is your educational background? Where did you go to school?"},
-    {"topic": "Education and Professional Life", "question": "Can you share about your professional career and accomplishments?"},
-    {"topic": "Education and Professional Life", "question": "Have you been involved in volunteer work or community activities?"},
-    {"topic": "Education and Professional Life", "question": "Who have been key mentors or influencers in your professional development?"},
-    {"topic": "Health and Well-being", "question": "Can you share about your physical and mental health history?"},
-    {"topic": "Health and Well-being", "question": "Have you experienced any major illnesses or health challenges? If so, how did they impact your life?"},
-    {"topic": "Health and Well-being", "question": "What lifestyle choices have you made related to health, such as diet or exercise?"},
-    {"topic": "Major Life Events and Experiences", "question": "Can you share about any defining moments in your life, such as childhood, adolescence, or adulthood?"},
-    {"topic": "Major Life Events and Experiences", "question": "Have you faced any personal challenges? How did you overcome them?"},
-    {"topic": "Major Life Events and Experiences", "question": "Can you share about any impactful historical events you've experienced, such as wars or political movements?"},
-    {"topic": "Major Life Events and Experiences", "question": "What are your religious or spiritual beliefs?"},
-    {"topic": "Cultural and Social Environment", "question": "Can you share about your social class and economic background?"},
-    {"topic": "Cultural and Social Environment", "question": "How have cultural influences, such as art, music, or media, shaped your life?"},
-    {"topic": "Cultural and Social Environment", "question": "Have you moved to different geographical locations? If so, how did they impact your life?"},
-    {"topic": "Cultural and Social Environment", "question": "Can you share about the social or political context of the time in which you lived?"},
-    {"topic": "Hobbies, Interests, and Passions", "question": "What are your major hobbies and personal interests?"},
-    {"topic": "Hobbies, Interests, and Passions", "question": "Have you had any significant travel experiences? If so, what were they like?"},
-    {"topic": "Hobbies, Interests, and Passions", "question": "Are you a member of any organizations or clubs? If so, how have they influenced your life?"},
-    {"topic": "Hobbies, Interests, and Passions", "question": "Have you contributed to your community or society in any meaningful way, such as through activism or advocacy?"},
-    {"topic": "Aspirations, Values, and Legacy", "question": "What are your personal values and guiding principles?"},
-    {"topic": "Aspirations, Values, and Legacy", "question": "What are your life aspirations, whether fulfilled or unfulfilled?"},
-    {"topic": "Aspirations, Values, and Legacy", "question": "How do you reflect on your life achievements and regrets?"},
-    {"topic": "Aspirations, Values, and Legacy", "question": "How do you wish to be remembered?"},
-]
-
 def profile_node(state: UserState):
     print(f"profile_node received state: {state}")
     print("Conversation history in profile_node:")
@@ -390,9 +354,11 @@ Follow-up question:"""
         print(f"Error during LLM invocation for follow-up: {e}")
         follow_up_question = "Can you tell me more about that?"
     
-    # Increment the follow-up count for the current topic
+    # Update follow_up_counts in the state
     current_topic = state.get("current_topic", "")
-    state.follow_up_counts[current_topic] = state.follow_up_counts.get(current_topic, 0) + 1
+    follow_up_counts = state.get("follow_up_counts", {})
+    follow_up_counts[current_topic] = follow_up_counts.get(current_topic, 0) + 1
+    state["follow_up_counts"] = follow_up_counts
     
     # Append the agent's question to the conversation history
     updated_messages = state["messages"] + [AIMessage(content=follow_up_question)]
@@ -402,7 +368,7 @@ Follow-up question:"""
         "current_question": follow_up_question,
         "awaiting_user_response": True,
         "profile_history": profile_history,
-        "follow_up_counts": state.follow_up_counts
+        "follow_up_counts": follow_up_counts
     }
 
 def profile_completion_check_node(state: dict):

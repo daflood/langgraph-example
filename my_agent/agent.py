@@ -1,5 +1,7 @@
-from langgraph.graph import StateGraph, MessagesState, END
-from typing import List, Dict, Any, Literal, Union, Annotated, Set
+import json
+from langgraph.graph import StateGraph, MessagesState, START, END
+from langgraph.prebuilt import ToolNode
+from typing import List, Dict, Any, Literal, Union, Annotated, Set, TypedDict
 from langchain_core.messages import AIMessage, SystemMessage, HumanMessage
 from langchain_openai import ChatOpenAI
 import logging
@@ -7,6 +9,9 @@ import logging
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Import the sample profile
+from my_agent.sample_profile import sample_profile
 
 # Initialize the OpenAI model
 llm = ChatOpenAI(model="gpt-4", temperature=0)
@@ -63,6 +68,18 @@ class BiographerState(MessagesState):
     contacts: List[str]  # List of known contacts
     chapter_complete: bool  # Flag to indicate if a chapter is complete
 
+   # Define a new configuration schema if needed
+class Config(TypedDict):
+    start_node: str
+
+# Set the entry point based on configuration
+def set_entry_point_based_on_config(graph, config):
+    start_node = config.get("start_node", "User Status Node")
+    if start_node == "Interview Question Prep":
+        graph.add_edge(START, "Interview Question Prep")
+    else:
+        graph.add_edge(START, "User Status Node")
+
 # Define the logic for each node
 def user_status_node(state: UserState):
     logger.info(f"user_status_node received state: {state}")
@@ -71,12 +88,20 @@ def user_status_node(state: UserState):
     else:
         return {"messages": state["messages"] + [SystemMessage(content="User status checked.")]}
 
-def initialize_node(state: UserState):
-    logger.info(f"initialize_node received state: {state}")
+# Modify the initialize_node to handle different start points
+def initialize_node(state: UserState, config: Config):
+    logger.info(f"initialize_node received state: {state} with config: {config}")
+    start_node = config.get("start_node", "User Status Node")
+    if start_node == "Interview Question Prep":
+        # Load the sample profile into the state
+        state["profile_history"] = sample_profile
+        state["topics_covered"] = {item["topic"] for item in sample_profile}
+        logger.info("Loaded sample profile into state.")
     return {
         "user_profile_status": False,
         "agent_introduction_status": False,
-        "messages": state["messages"] + [SystemMessage(content="State initialized.")]
+        "messages": state["messages"] + [SystemMessage(content="State initialized.")],
+        "start_node": start_node
     }
 
 def agent_introduction_check_node(state: UserState):
@@ -203,7 +228,7 @@ Rephrased question:"""
             "topics_covered": list(topics_covered)
         }
 
-def profile_completion_check_node(state: UserState):
+def profile_completion_check_node(state: dict):
     logger.info(f"profile_completion_check_node received state: {state}")
     profile_history = state.get("profile_history", [])
     total_questions = len(topics_and_questions)
@@ -214,8 +239,8 @@ def profile_completion_check_node(state: UserState):
 
     if answered_questions >= total_questions:
         return {
-            "next_step": "Questioning Node",
-            "messages": state["messages"] + [SystemMessage(content="All profile questions have been answered.")]
+            "next_step": "Interview Question Prep",
+            "messages": state["messages"] + [SystemMessage(content="All profile questions have been answered. Moving to interview question preparation.")]
         }
     else:
         return {
@@ -389,25 +414,26 @@ Follow-up question:"""
         "follow_up_counts": follow_up_counts
     }
 
-def profile_completion_check_node(state: dict):
-    logger.info(f"profile_completion_check_node received state: {state}")
+def interview_question_prep_node(state: UserState):
+    logger.info(f"interview_question_prep_node received state: {state}")
+    
     profile_history = state.get("profile_history", [])
-    total_questions = len(topics_and_questions)  # Ensure 'topics_and_questions' is accessible here
+    if not profile_history:
+        logger.warning("No profile history found.")
+        return {"messages": state["messages"] + [SystemMessage(content="No profile data available.")]}
 
-    answered_questions = len(profile_history)
-    logger.info(f"Total questions: {total_questions}")
-    logger.info(f"Answered questions: {answered_questions}")
-
-    if answered_questions >= total_questions:
-        return {
-            "next_step": "Questioning Node",
-            "messages": state["messages"] + [SystemMessage(content="All profile questions have been answered.")]
-        }
-    else:
-        return {
-            "next_step": "Profile Node",
-            "messages": state["messages"]
-        }
+    for qa in profile_history:
+        question = qa["question"]
+        answer = qa["answer"]
+        state["messages"] += [AIMessage(content=question), HumanMessage(content=answer)]
+    
+    logger.info("Loaded profile questions and answers into the conversation history.")
+    
+    # Proceed to the next node
+    return {
+        "next_step": "Interview Question Prep",
+        "messages": state["messages"] + [SystemMessage(content="Loaded all profile data.")]
+    }
 
 def questioning_node(state: BiographerState):
     logger.info(f"questioning_node received state: {state}")
@@ -477,6 +503,7 @@ graph.add_node("Profile Node", profile_node)
 graph.add_node("Profile Question Validation", profile_question_validation_node)
 graph.add_node("Profile Follow Up", profile_follow_up_node)
 graph.add_node("Profile Completion Check", profile_completion_check_node)
+graph.add_node("Interview Question Prep", interview_question_prep_node)
 graph.add_node("Questioning Node", questioning_node)
 graph.add_node("contact_check_node", contact_check_node)
 graph.add_node("contact_validation_node", contact_validation_node)
@@ -537,11 +564,19 @@ graph.add_conditional_edges(
     "Profile Completion Check",
     lambda x: x["next_step"],
     {
-        "Questioning Node": "Questioning Node",
+        "Interview Question Prep": "Interview Question Prep",
         "Profile Node": "Profile Node"
     }
 )
 
+graph.add_edge("Interview Question Prep", "Questioning Node")
+graph.add_conditional_edges(
+    "Interview Question Prep",
+    lambda x: "User Status Node",  # Define logic to route back if necessary
+    {
+        "User Status Node": "User Status Node",
+    }
+)
 graph.add_edge("Questioning Node", "contact_check_node")
 graph.add_conditional_edges(
     "contact_check_node",
@@ -583,8 +618,26 @@ graph.add_edge("chapter_writer_node", "chapter_save_node")
 graph.add_edge("chapter_save_node", "congratulations_node")
 graph.add_edge("congratulations_node", END)
 
-# Set the entry point before compiling
-graph.set_entry_point("User Status Node")
+# Example configuration. Set "start_node" to "Interview Question Prep" to start with interview questions. Set "start_node" to "User Status Node" to start with the user's status.
+config = {"start_node": "Interview Question Prep"}
 
-# Compile the graph
-app = graph.compile()
+
+# Set the entry point before compiling
+set_entry_point_based_on_config(graph, config)
+
+# Compile the graph with the configuration
+app = graph.compile(interrupt_before=["Profile Node"])
+
+# Prepare the input data
+input_data = {
+    "messages": [],
+    "user_profile_status": False,
+    "agent_introduction_status": False,
+    "profile_info_collected": False,
+    "profile_history": [],
+    "current_question": "",
+    "current_topic": "",
+    "topics_covered": set(),
+    "follow_up_counts": {}
+}
+final_state = app.invoke(input=input_data)

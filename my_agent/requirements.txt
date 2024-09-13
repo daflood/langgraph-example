@@ -1,5 +1,10 @@
 langgraph
+# langgraph_core
 langchain_anthropic
 tavily-python
 langchain_community
 langchain_openai
+langchain
+langchain-core
+
+

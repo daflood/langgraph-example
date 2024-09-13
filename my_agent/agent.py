@@ -68,7 +68,7 @@ def profile_introduction_node(state: UserState):
         "To help me write your biography effectively, I'd like to start by asking you some general questions "
         "about your life. This will give me a better understanding of your background and experiences. "
         "With this information, I'll be able to ask more appropriate and insightful questions as we delve "
-        "deeper into your life story."
+        "deeper into your life story. Because we're telling the story of your life, many of these questions will be personal. You don't need to answer anything that makes you uncomfortable and we can always skip questions or come back to them later. "
     )
     
     return {
@@ -111,15 +111,13 @@ def profile_node(state: UserState):
         history_str = "\n".join([f"Q: {qa['question']}\nA: {qa['answer']}" for qa in profile_history])
         
         # Generate a new question using the LLM
-        prompt = f"""As a helpful biographer, ask a new question to gather information about someone's life for their biography.
+        prompt = f"""You are a biographer with extensive experience writing best selling biographies of obscure subjects. You are working with a new subject and just getting to know then. Ask a specific and targeted question about the user's demographic profile so you have enough information to develop a writing plan for their biography. Only ask about one topic at a time. Good topics to cover are: birth place and date, family members, upbringing, family history, places lived, education, career history, current occupation, hobbies, and significant life events. If the question is open ended, provide an example answer. For example, if you ask about the user's family background, here's how you would ask, "User, please tell me about your family. For example, do you have any siblings?"
         
-        Some good topics to cover are: birth place and date, upbringing, places lived, education, career history, current occupation, hobbies, and significant life events. If the user seems hesitant to answer, ask them if they would like to talk about something else.
-        
-        Please ask a new question that hasn't been asked before. Here are the questions and answers you've already collected:
+        Only ask a question that hasn't been asked before. Here are the questions and answers you've already collected:
 
         {history_str}
-
-        New question:"""
+        
+        Use clear and concise language and write in a conversational tone. New question:"""
         
         response = llm.invoke(prompt)
         question = response.content.strip()
@@ -139,7 +137,7 @@ def profile_node(state: UserState):
         "awaiting_user_response": True,
         "profile_history": profile_history
     }
-
+ 
 def profile_question_validation_node(state: UserState):
     print(f"profile_question_validation_node received state: {state}")
     print("Conversation history in profile_question_validation_node:")
@@ -172,11 +170,12 @@ def profile_question_validation_node(state: UserState):
         state["profile_history"] = profile_history
     
     # Determine if a follow-up question is appropriate
-    prompt = f"""Based on the following question and answer, determine if a follow-up question would be appropriate to extend the conversation and gather more information about the user's life story. 
+    prompt = f"""You are a biographer interviewing a subject so you can create a demographic profile. Here are the most recent question and answer:
     Question: {last_question}
     Answer: {last_answer}
     
-    If a follow-up is appropriate, respond with 'Follow Up'. Otherwise, respond with 'Complete'.
+    If the answer satisfies the question, respond with 'Complete'. 
+    Otherwise, respond with 'Follow Up'. 
     """
     
     response = llm.invoke(prompt)
@@ -231,7 +230,7 @@ def profile_follow_up_node(state: UserState):
     history_str = "\n".join([f"Q: {qa['question']}\nA: {qa['answer']}" for qa in profile_history])
     
     # Generate a new question using the LLM
-    prompt = f"""As a conversational agent interested in the user's life story, generate a follow-up question based on the previous question and answer. The question should logically extend the conversation and show genuine interest in learning more about the user. Avoid exclamation marks and excessive enthusiasm.
+    prompt = f"""You are a biographer working with a new subject and you have just asked the user a question and received an answer. Generate a follow-up question based on the previous question and answer that logically extends the conversation and shows genuine interest in learning more about the user. Do not repeat previous questions. 
 
 Previous question: {last_question}
 User's answer: {last_answer}
@@ -239,6 +238,7 @@ User's answer: {last_answer}
 Here's the conversation history so far:
 {history_str}
 
+Use clear and concise language. Avoid exclamation marks and excessive enthusiasm. 
 Follow-up question:"""
     
     response = llm.invoke(prompt)

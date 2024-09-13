@@ -2,6 +2,11 @@ from langgraph.graph import StateGraph, MessagesState, END
 from typing import List, Dict, Any, Literal, Union, Annotated, Set
 from langchain_core.messages import AIMessage, SystemMessage, HumanMessage
 from langchain_openai import ChatOpenAI
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Initialize the OpenAI model
 llm = ChatOpenAI(model="gpt-4", temperature=0)
@@ -60,14 +65,14 @@ class BiographerState(MessagesState):
 
 # Define the logic for each node
 def user_status_node(state: UserState):
-    print(f"user_status_node received state: {state}")
+    logger.info(f"user_status_node received state: {state}")
     if state.get("user_profile_status") is None:
         return {"user_profile_status": False}
     else:
         return {"messages": state["messages"] + [SystemMessage(content="User status checked.")]}
 
 def initialize_node(state: UserState):
-    print(f"initialize_node received state: {state}")
+    logger.info(f"initialize_node received state: {state}")
     return {
         "user_profile_status": False,
         "agent_introduction_status": False,
@@ -75,11 +80,11 @@ def initialize_node(state: UserState):
     }
 
 def agent_introduction_check_node(state: UserState):
-    print(f"agent_introduction_check_node received state: {state}")
+    logger.info(f"agent_introduction_check_node received state: {state}")
     return {"messages": state["messages"] + [SystemMessage(content="Checking if agent introduction is needed.")]}
 
 def agent_introduction_node(state: UserState):
-    print(f"agent_introduction_node received state: {state}")
+    logger.info(f"agent_introduction_node received state: {state}")
     
     introduction = (
         "Hello! I'm your virtual biographer. My purpose is to assist you in creating your autobiography. "
@@ -97,11 +102,11 @@ def agent_introduction_node(state: UserState):
     }
 
 def profile_check_node(state: UserState):
-    print(f"profile_check_node received state: {state}")
+    logger.info(f"profile_check_node received state: {state}")
     return {"messages": state["messages"] + [SystemMessage(content="Profile status checked.")]}
 
 def profile_introduction_node(state: UserState):
-    print(f"profile_introduction_node received state: {state}")
+    logger.info(f"profile_introduction_node received state: {state}")
     
     profile_intro = (
         "To help me write your biography effectively, I'd like to start by asking you some general questions "
@@ -118,10 +123,10 @@ def profile_introduction_node(state: UserState):
     }
 
 def profile_node(state: UserState):
-    print(f"profile_node received state: {state}")
-    print("Conversation history in profile_node:")
+    logger.info(f"profile_node received state: {state}")
+    logger.info("Conversation history in profile_node:")
     for msg in state["messages"]:
-        print(f"  {type(msg).__name__}: {msg.content}")
+        logger.info(f"  {type(msg).__name__}: {msg.content}")
     
     conversation_history = state["messages"]
     last_message = conversation_history[-1] if conversation_history else None
@@ -142,7 +147,7 @@ def profile_node(state: UserState):
                 "question": last_question,
                 "answer": user_response
             })
-            print(f"Updated profile history: {profile_history}")
+            logger.info(f"Updated profile history: {profile_history}")
     
             # Optionally perform analysis
             # ...
@@ -169,7 +174,7 @@ Rephrased question:"""
             response = llm.invoke(prompt)
             question = response.content.strip()
         except Exception as e:
-            print(f"Error during LLM invocation for rephrasing: {e}")
+            logger.error(f"Error during LLM invocation for rephrasing: {e}")
             question = next_question['question']
     
         # Update state
@@ -199,13 +204,13 @@ Rephrased question:"""
         }
 
 def profile_completion_check_node(state: UserState):
-    print(f"profile_completion_check_node received state: {state}")
+    logger.info(f"profile_completion_check_node received state: {state}")
     profile_history = state.get("profile_history", [])
     total_questions = len(topics_and_questions)
 
     answered_questions = len(profile_history)
-    print(f"Total questions: {total_questions}")
-    print(f"Answered questions: {answered_questions}")
+    logger.info(f"Total questions: {total_questions}")
+    logger.info(f"Answered questions: {answered_questions}")
 
     if answered_questions >= total_questions:
         return {
@@ -219,10 +224,10 @@ def profile_completion_check_node(state: UserState):
         }
 
 def profile_question_validation_node(state: dict):
-    print(f"profile_question_validation_node received state: {state}")
-    print("Conversation history in profile_question_validation_node:")
+    logger.info(f"profile_question_validation_node received state: {state}")
+    logger.info("Conversation history in profile_question_validation_node:")
     for msg in state["messages"]:
-        print(f"  {type(msg).__name__}: {msg.content}")
+        logger.info(f"  {type(msg).__name__}: {msg.content}")
     
     conversation_history = state["messages"]
     
@@ -240,15 +245,15 @@ def profile_question_validation_node(state: dict):
         last_answer = last_human_message.content
     
     if not last_question:
-        print("No last_question found. Skipping validation.")
+        logger.info("No last_question found. Skipping validation.")
         # Handle the case where there is no last_question
         return {
             "messages": state["messages"],
             "next_step": "Profile Node"  # Or any appropriate next step
         }
     
-    print(f"Last question: {last_question}")
-    print(f"Last answer: {last_answer}")
+    logger.info(f"Last question: {last_question}")
+    logger.info(f"Last answer: {last_answer}")
     
     # Update the profile history
     profile_history = state.get("profile_history", [])
@@ -257,7 +262,7 @@ def profile_question_validation_node(state: dict):
             "question": last_question,
             "answer": last_answer
         })
-        print(f"Updated profile history: {profile_history}")
+        logger.info(f"Updated profile history: {profile_history}")
         
         # Update the state with the new profile history
         state["profile_history"] = profile_history
@@ -275,7 +280,7 @@ Otherwise, respond with 'Complete'.
         analysis_response = llm.invoke(prompt)
         decision = analysis_response.content.strip().lower()
     except Exception as e:
-        print(f"Error during LLM invocation for validation: {e}")
+        logger.error(f"Error during LLM invocation for validation: {e}")
         decision = "complete"  # Default decision on error
     
     current_topic = state.get("current_topic", "")
@@ -287,7 +292,7 @@ Otherwise, respond with 'Complete'.
     else:
         next_step = "Profile Completion Check"
     
-    print(f"Decision: {decision}, Next step: {next_step}")
+    logger.info(f"Decision: {decision}, Next step: {next_step}")
     
     # Update follow_up_counts in the state
     if "follow up" in decision:
@@ -301,39 +306,45 @@ Otherwise, respond with 'Complete'.
 
 def next_step(state):
     decision = state.get("next_step", "Profile Completion Check")
-    print(f"Next step decision: {decision}")  # Add this line for debugging
+    logger.info(f"Next step decision: {decision}")  # Add this line for debugging
     return decision
 
 def profile_follow_up_node(state: UserState):
-    print(f"profile_follow_up_node received state: {state}")
-    print("Conversation history in profile_follow_up_node:")
+    logger.info(f"profile_follow_up_node received state: {state}")
+    logger.info("Conversation history in profile_follow_up_node:")
     for msg in state["messages"]:
-        print(f"  {type(msg).__name__}: {msg.content}")
+        logger.info(f"  {type(msg).__name__}: {msg.content}")
     
     conversation_history = state["messages"]
     last_question = state.get("current_question", "")
     last_answer = next((msg.content for msg in reversed(conversation_history) if isinstance(msg, HumanMessage)), "")
     
-    print(f"Last question: {last_question}")
-    print(f"Last answer: {last_answer}")
+    logger.info(f"Last question: {last_question}")
+    logger.info(f"Last answer: {last_answer}")
     
     # Update the profile history with the previous question-answer pair
     profile_history = state.get("profile_history", [])
     if last_question and last_answer:
-        # Update the last item in the profile history or add a new one
-        if profile_history and profile_history[-1]["question"] == last_question:
-            profile_history[-1]["answer"] = last_answer
-        else:
-            profile_history.append({
-                "question": last_question,
-                "answer": last_answer
-            })
-        print(f"Updated profile history item: {profile_history[-1]}")
+        try:
+            if profile_history and profile_history[-1]["question"] == last_question:
+                profile_history[-1]["answer"] = last_answer
+            else:
+                profile_history.append({
+                    "question": last_question,
+                    "answer": last_answer
+                })
+            logger.info(f"Updated profile history item: {profile_history[-1]}")
+        except Exception as e:
+            logger.error(f"Error updating profile history: {e}")
     
-    print(f"Updated profile history: {profile_history}")
+    logger.info(f"Updated profile history: {profile_history}")
     
     # Prepare the profile history for the prompt
-    history_str = "\n".join([f"Q: {qa['question']}\nA: {qa['answer']}" for qa in profile_history])
+    try:
+        history_str = "\n".join([f"Q: {qa['question']}\nA: {qa['answer']}" for qa in profile_history])
+    except Exception as e:
+        logger.error(f"Error preparing profile history string: {e}")
+        history_str = ""
     
     # Generate a new question using the LLM
     prompt = f"""You are a biographer working with a new subject and you have just asked the user a question and received an answer. Generate a follow-up question based on the previous question and answer that logically extends the conversation and shows genuine interest in learning more about the user. Do not repeat previous questions. 
@@ -351,17 +362,24 @@ Follow-up question:"""
         follow_up_response = llm.invoke(prompt)
         follow_up_question = follow_up_response.content.strip()
     except Exception as e:
-        print(f"Error during LLM invocation for follow-up: {e}")
+        logger.error(f"Error during LLM invocation for follow-up: {e}")
         follow_up_question = "Can you tell me more about that?"
     
     # Update follow_up_counts in the state
-    current_topic = state.get("current_topic", "")
-    follow_up_counts = state.get("follow_up_counts", {})
-    follow_up_counts[current_topic] = follow_up_counts.get(current_topic, 0) + 1
-    state["follow_up_counts"] = follow_up_counts
+    try:
+        current_topic = state.get("current_topic", "")
+        follow_up_counts = state.get("follow_up_counts", {})
+        follow_up_counts[current_topic] = follow_up_counts.get(current_topic, 0) + 1
+        state["follow_up_counts"] = follow_up_counts
+    except Exception as e:
+        logger.error(f"Error updating follow_up_counts: {e}")
     
     # Append the agent's question to the conversation history
-    updated_messages = state["messages"] + [AIMessage(content=follow_up_question)]
+    try:
+        updated_messages = state["messages"] + [AIMessage(content=follow_up_question)]
+    except Exception as e:
+        logger.error(f"Error appending new message to conversation history: {e}")
+        updated_messages = state["messages"]
     
     return {
         "messages": updated_messages,
@@ -372,13 +390,13 @@ Follow-up question:"""
     }
 
 def profile_completion_check_node(state: dict):
-    print(f"profile_completion_check_node received state: {state}")
+    logger.info(f"profile_completion_check_node received state: {state}")
     profile_history = state.get("profile_history", [])
     total_questions = len(topics_and_questions)  # Ensure 'topics_and_questions' is accessible here
 
     answered_questions = len(profile_history)
-    print(f"Total questions: {total_questions}")
-    print(f"Answered questions: {answered_questions}")
+    logger.info(f"Total questions: {total_questions}")
+    logger.info(f"Answered questions: {answered_questions}")
 
     if answered_questions >= total_questions:
         return {
@@ -392,57 +410,57 @@ def profile_completion_check_node(state: dict):
         }
 
 def questioning_node(state: BiographerState):
-    print(f"questioning_node received state: {state}")
+    logger.info(f"questioning_node received state: {state}")
     return {"messages": state["messages"] + [SystemMessage(content="What is your story?")]}
 
 def contact_check_node(state: BiographerState):
-    print(f"contact_check_node received state: {state}")
+    logger.info(f"contact_check_node received state: {state}")
     return {"messages": state["messages"] + [SystemMessage(content="Checking for contacts.")]}
 
 def contact_validation_node(state: BiographerState):
-    print(f"contact_validation_node received state: {state}")
+    logger.info(f"contact_validation_node received state: {state}")
     return {"messages": state["messages"] + [SystemMessage(content="Validating contact.")]}
 
 def contact_store_node(state: BiographerState):
-    print(f"contact_store_node received state: {state}")
+    logger.info(f"contact_store_node received state: {state}")
     return {
         "contacts": state.get("contacts", []) + ["new_contact"],
         "messages": state["messages"] + [SystemMessage(content="New contact stored.")]
     }
 
 def reach_validation_node(state: BiographerState):
-    print(f"reach_validation_node received state: {state}")
+    logger.info(f"reach_validation_node received state: {state}")
     return {"messages": state["messages"] + [SystemMessage(content="Validating reach.")]}
 
 def contact_node(state: BiographerState):
-    print(f"contact_node received state: {state}")
+    logger.info(f"contact_node received state: {state}")
     return {"messages": state["messages"] + [SystemMessage(content="Contact processed.")]}
 
 def conversation_validation_node(state: BiographerState):
-    print(f"conversation_validation_node received state: {state}")
+    logger.info(f"conversation_validation_node received state: {state}")
     return {"messages": state["messages"] + [SystemMessage(content="Conversation validated.")]}
 
 def follow_up_node(state: BiographerState):
-    print(f"follow_up_node received state: {state}")
+    logger.info(f"follow_up_node received state: {state}")
     return {"messages": state["messages"] + [SystemMessage(content="Can you elaborate?")]}
 
 def chapter_check_node(state: BiographerState):
-    print(f"chapter_check_node received state: {state}")
+    logger.info(f"chapter_check_node received state: {state}")
     return {"messages": state["messages"] + [SystemMessage(content="Checking chapter status.")]}
 
 def chapter_writer_node(state: BiographerState):
-    print(f"chapter_writer_node received state: {state}")
+    logger.info(f"chapter_writer_node received state: {state}")
     return {"messages": state["messages"] + [SystemMessage(content="Writing chapter...")]}
 
 def chapter_save_node(state: BiographerState):
-    print(f"chapter_save_node received state: {state}")
+    logger.info(f"chapter_save_node received state: {state}")
     return {
         "chapter_complete": True,
         "messages": state["messages"] + [SystemMessage(content="Saving chapter...")]
     }
 
 def congratulations_node(state: BiographerState):
-    print(f"congratulations_node received state: {state}")
+    logger.info(f"congratulations_node received state: {state}")
     return {"messages": state["messages"] + [SystemMessage(content="Congratulations!")]}
 
 # Create the state graph

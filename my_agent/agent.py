@@ -538,8 +538,8 @@ def questioning_response_node(state: UserState):
             # Reset awaiting response
             state.awaiting_user_response = False
 
-    # Proceed to the next question
-    return questioning_node(state)
+    # Instead of proceeding to the next question, return the updated state
+    return state
 
 def contact_check_node(state: BiographerState):
     logger.info(f"contact_check_node received state: {state}")
@@ -650,11 +650,11 @@ def next_question_step(state):
 def question_follow_up_node(state: UserState):
     logger.info(f"question_follow_up_node received state: {state}")
     logger.info("Conversation history in question_follow_up_node:")
-    for msg in state["messages"]:
+    for msg in state.messages:
         logger.info(f"  {type(msg).__name__}: {msg.content}")
 
     # Determine the next follow-up question based on interaction history
-    interaction_history = state.get("interaction_history", [])
+    interaction_history = state.conversation_history
     last_interaction = interaction_history[-1] if interaction_history else None
 
     if last_interaction:
@@ -676,11 +676,15 @@ Follow-up Question:
             logger.error(f"Error during LLM invocation for follow-up question: {e}")
             follow_up_question = "Can you tell me more about that?"
 
-        return {
-            "messages": state["messages"] + [AIMessage(content=follow_up_question)],
-            "current_question": follow_up_question,
-            "awaiting_user_response": True
+        # Update the state with the new question
+        state.current_question = {
+            "chapter": last_interaction["chapter"],
+            "question": follow_up_question
         }
+        state.awaiting_user_response = True
+
+        # Return the updated state to be passed to questioning_response_node
+        return state
     else:
         # No previous interaction, proceed to next step
         return {"next_step": "Chapter Check Node"}
@@ -825,7 +829,7 @@ graph.add_conditional_edges(
         "chapter_check_node": "chapter_check_node"
     }
 )
-graph.add_edge("Question Follow Up", "contact_check_node")
+graph.add_edge("Question Follow Up", "Questioning Response Node")
 graph.add_conditional_edges(
     "chapter_check_node",
     lambda x: "chapter_writer_node" if x.get("chapter_complete") else "Questioning Node",

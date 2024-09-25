@@ -1,4 +1,6 @@
 import json
+import os
+from pydantic import BaseModel
 from langgraph.graph import StateGraph, MessagesState, START, END
 from langgraph.prebuilt import ToolNode
 from typing import List, Dict, Any, Literal, Union, Annotated, Set, TypedDict
@@ -6,12 +8,17 @@ from langchain_core.messages import AIMessage, SystemMessage, HumanMessage
 from langchain_openai import ChatOpenAI
 import logging
 
+# set true and true to run in testing mode
+TESTING_MODE = os.getenv("TESTING_MODE", "True") == "True"
+
+# Import the sample profile and interview for testing
+from my_agent.sample_profile import sample_profile
+# logger.info(f"sample_profile contains {len(sample_profile)} items")
+from my_agent.sample_interview import sample_interview
+
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# Import the sample profile
-from my_agent.sample_profile import sample_profile
 
 # Initialize the OpenAI model
 llm = ChatOpenAI(model="gpt-4", temperature=0)
@@ -58,10 +65,15 @@ class UserState(MessagesState):
     agent_introduction_status: bool
     profile_info_collected: bool
     profile_history: List[Dict[str, str]] = []
-    current_question: str = ""
-    current_topic: str = ""
+    interaction_history: List[Dict[str, str]] = []  # Existing field for interaction history
+    conversation_history: List[Dict[str, str]] = []  # New field for conversation history
+    current_question: Dict[str, Any] = {}  # Updated to handle chapter and question
+    current_chapter_index: int = 0  # Tracks the current chapter
+    current_question_index: int = 0  # Tracks the current question within the chapter
     topics_covered: Set[str] = set()
     follow_up_counts: Dict[str, int] = {}
+    interview_questions: List[Dict[str, Any]] = []  # Existing field for interview questions
+    awaiting_user_response: bool = False  # Existing field
 
 # Define the state with a built-in messages key
 class BiographerState(MessagesState):
@@ -174,9 +186,6 @@ def profile_node(state: UserState):
             })
             logger.info(f"Updated profile history: {profile_history}")
     
-            # Optionally perform analysis
-            # ...
-        
         # Reset awaiting_user_response
         state["awaiting_user_response"] = False
 
@@ -416,28 +425,121 @@ Follow-up question:"""
 
 def interview_question_prep_node(state: UserState):
     logger.info(f"interview_question_prep_node received state: {state}")
-    
-    profile_history = state.get("profile_history", [])
-    if not profile_history:
-        logger.warning("No profile history found.")
-        return {"messages": state["messages"] + [SystemMessage(content="No profile data available.")]}
+    logger.info(f"TESTING_MODE is set to: {TESTING_MODE}")
+    if TESTING_MODE:
+        state.interview_questions = sample_interview  # Assuming sample_interview is loaded here
+        logger.info(f"Loaded {len(state.interview_questions)} sample interview questions for testing.")
+    else:
+        profile_history = state.profile_history
+        if not profile_history:
+            logger.warning("No profile history found.")
+            return {"messages": state.messages + [SystemMessage(content="No profile data available.")]}
+        
+        # Prepare the demographic profile as a string
+        profile_string = "\n".join([f"Q: {qa['question']}\nA: {qa['answer']}" for qa in profile_history])
+        
+        # Prepare the system prompt
+        system_prompt = """You are an expert biographer working on a 6 to 12 chapter biography. You have been provided a complete demographic profile of the subject based on previous question and answer sessions. Prepare about 100-120 interview questions based on that demographic profile. Favor open-ended questions to encourage detailed responses. Be respectful of sensitive topics. Categorize questions into chapters."""
+        
+        # Prepare the user prompt
+        user_prompt = f"""Here is the demographic profile of the subject:
+        
+{profile_string}
 
-    for qa in profile_history:
-        question = qa["question"]
-        answer = qa["answer"]
-        state["messages"] += [AIMessage(content=question), HumanMessage(content=answer)]
+Based on this profile, generate 100-120 interview questions categorized into chapters. Please format your response as a JSON array of objects, where each object has a 'chapter' field and a 'questions' field containing an array of questions for that chapter."""
+        
+        # Generate interview questions using the LLM
+        try:
+            response = llm.invoke(
+                [
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=user_prompt)
+                ]
+            )
+            interview_data = json.loads(response.content)
+            state.interview_questions = interview_data
+            logger.info(f"Generated {len(state.interview_questions)} interview questions across chapters.")
+        except Exception as e:
+            logger.error(f"Error generating interview questions: {e}")
+            state.interview_questions = []
     
-    logger.info("Loaded profile questions and answers into the conversation history.")
-    
-    # Proceed to the next node
     return {
-        "next_step": "Interview Question Prep",
-        "messages": state["messages"] + [SystemMessage(content="Loaded all profile data.")]
+        "interview_questions": state.interview_questions,
+        "messages": state.messages + [SystemMessage(content="Interview questions prepared.")]
     }
 
-def questioning_node(state: BiographerState):
+def questioning_node(state: UserState):
     logger.info(f"questioning_node received state: {state}")
-    return {"messages": state["messages"] + [SystemMessage(content="What is your story?")]}
+    interview_questions = state.interview_questions
+    chapter_index = state.current_chapter_index
+    question_index = state.current_question_index
+
+    # Load sample questions in testing mode if not already loaded
+    if TESTING_MODE and not interview_questions:
+        from my_agent.sample_interview import sample_interview
+        state.interview_questions = sample_interview
+        interview_questions = sample_interview
+        logger.info("Loaded sample interview questions for testing mode.")
+
+    # Check if all chapters have been covered
+    if chapter_index >= len(interview_questions):
+        closing_message = "Thank you for completing the interview."
+        logger.info("All interview questions have been asked.")
+        return {
+            "messages": state.messages + [AIMessage(content=closing_message)],
+            "awaiting_user_response": False
+        }
+
+    current_chapter = interview_questions[chapter_index]
+    questions = current_chapter["questions"]
+
+    # Check if all questions in the current chapter have been asked
+    if question_index >= len(questions):
+        # Move to the next chapter
+        state.current_chapter_index += 1
+        state.current_question_index = 0
+        logger.info(f"Moving to next chapter: {interview_questions[state.current_chapter_index]['chapter']}")
+        return questioning_node(state)
+
+    next_question = questions[question_index]
+
+    # Update state with the current question
+    state.current_question = {
+        "chapter": current_chapter["chapter"],
+        "question": next_question
+    }
+    state.awaiting_user_response = True
+    state.current_question_index += 1
+
+    logger.info(f"Asking interview question: {next_question}")
+
+    return {
+        "messages": state.messages + [AIMessage(content=next_question)],
+        "current_question": state.current_question,
+        "awaiting_user_response": True
+    }
+# Handle user responses by appending the question and answer to the conversation_history and preparing the next question.
+def questioning_response_node(state: UserState):
+    logger.info(f"questioning_response_node received state: {state}")
+    if state.awaiting_user_response:
+        last_message = state.messages[-1]
+        if isinstance(last_message, HumanMessage):
+            user_response = last_message.content
+            current_question = state.current_question
+
+            # Append the current question and user response to the conversation history
+            state.conversation_history.append({
+                "chapter": current_question.get("chapter", ""),
+                "question": current_question.get("question", ""),
+                "answer": user_response
+            })
+            logger.info(f"Appended to conversation history: {current_question.get('question')} - {user_response}")
+
+            # Reset awaiting response
+            state.awaiting_user_response = False
+
+    # Proceed to the next question
+    return questioning_node(state)
 
 def contact_check_node(state: BiographerState):
     logger.info(f"contact_check_node received state: {state}")
@@ -462,13 +564,126 @@ def contact_node(state: BiographerState):
     logger.info(f"contact_node received state: {state}")
     return {"messages": state["messages"] + [SystemMessage(content="Contact processed.")]}
 
-def conversation_validation_node(state: BiographerState):
-    logger.info(f"conversation_validation_node received state: {state}")
-    return {"messages": state["messages"] + [SystemMessage(content="Conversation validated.")]}
+def question_validation_node(state: UserState):
+    logger.info(f"question_validation_node received state: {state}")
+    logger.info("Conversation history in question_validation_node:")
+    for msg in state["messages"]:
+        logger.info(f"  {type(msg).__name__}: {msg.content}")
 
-def follow_up_node(state: BiographerState):
-    logger.info(f"follow_up_node received state: {state}")
-    return {"messages": state["messages"] + [SystemMessage(content="Can you elaborate?")]}
+    conversation_history = state["messages"]
+    last_message = conversation_history[-1] if conversation_history else None
+
+    # Safely retrieve the last AI and Human messages
+    last_ai_message = next((msg for msg in reversed(conversation_history) if isinstance(msg, AIMessage)), None)
+    last_human_message = next((msg for msg in reversed(conversation_history) if isinstance(msg, HumanMessage)), None)
+
+    # Initialize variables
+    last_question = ""
+    last_answer = ""
+
+    if last_ai_message:
+        last_question = last_ai_message.content
+    if last_human_message:
+        last_answer = last_human_message.content
+
+    if not last_question:
+        logger.info("No last_question found. Skipping validation.")
+        # Handle the case where there is no last_question
+        return {
+            "messages": state["messages"],
+            "next_step": "Chapter Check Node"  # Or any appropriate default next step
+        }
+
+    logger.info(f"Last question: {last_question}")
+    logger.info(f"Last answer: {last_answer}")
+
+    # Update the interaction history
+    interaction_history = state.get("interaction_history", [])
+    if last_question and last_answer:
+        interaction_history.append({
+            "question": last_question,
+            "answer": last_answer
+        })
+        logger.info(f"Updated interaction history: {interaction_history}")
+
+    state["interaction_history"] = interaction_history
+
+    # Determine if a follow-up question is appropriate
+    prompt = f"""You are an intelligent agent conducting an interview. Based on the latest question and answer:
+
+Question: {last_question}
+Answer: {last_answer}
+
+Determine whether a follow-up question would logically extend the conversation and gather more relevant information.
+
+Respond with 'Follow Up' if a follow-up question is appropriate.
+Otherwise, respond with 'Proceed to Chapter Check'.
+
+Ensure your response is either 'Follow Up' or 'Proceed to Chapter Check' with no additional text.
+"""
+
+    try:
+        # Invoke the LLM to make the decision
+        response = llm.invoke(prompt)
+        decision = response.content.strip().lower()
+    except Exception as e:
+        logger.error(f"Error during LLM invocation for question validation: {e}")
+        decision = "proceed to chapter check"  # Default decision on error
+
+    if "follow up" in decision:
+        next_step = "Question Follow Up Node"
+    else:
+        next_step = "Chapter Check Node"
+
+    logger.info(f"Decision: {decision}, Next step: {next_step}")
+
+    return {
+        "messages": state["messages"],
+        "next_step": next_step
+    }
+# Define the logic for the Question Validation Node
+def next_question_step(state):
+    decision = state.get("next_step", "Chapter Check Node")
+    logger.info(f"Next question step decision: {decision}")  # Add this line for debugging
+    return decision
+
+def question_follow_up_node(state: UserState):
+    logger.info(f"question_follow_up_node received state: {state}")
+    logger.info("Conversation history in question_follow_up_node:")
+    for msg in state["messages"]:
+        logger.info(f"  {type(msg).__name__}: {msg.content}")
+
+    # Determine the next follow-up question based on interaction history
+    interaction_history = state.get("interaction_history", [])
+    last_interaction = interaction_history[-1] if interaction_history else None
+
+    if last_interaction:
+        last_question = last_interaction["question"]
+        last_answer = last_interaction["answer"]
+        
+        # Generate a follow-up question using the LLM
+        prompt = f"""Based on the previous interaction, generate a thoughtful follow-up question.
+
+Previous Question: {last_question}
+User's Answer: {last_answer}
+
+Follow-up Question:
+"""
+        try:
+            follow_up_response = llm.invoke(prompt)
+            follow_up_question = follow_up_response.content.strip()
+        except Exception as e:
+            logger.error(f"Error during LLM invocation for follow-up question: {e}")
+            follow_up_question = "Can you tell me more about that?"
+
+        return {
+            "messages": state["messages"] + [AIMessage(content=follow_up_question)],
+            "current_question": follow_up_question,
+            "awaiting_user_response": True
+        }
+    else:
+        # No previous interaction, proceed to next step
+        return {"next_step": "Chapter Check Node"}
 
 def chapter_check_node(state: BiographerState):
     logger.info(f"chapter_check_node received state: {state}")
@@ -505,13 +720,14 @@ graph.add_node("Profile Follow Up", profile_follow_up_node)
 graph.add_node("Profile Completion Check", profile_completion_check_node)
 graph.add_node("Interview Question Prep", interview_question_prep_node)
 graph.add_node("Questioning Node", questioning_node)
+graph.add_node("Questioning Response Node", questioning_response_node)
 graph.add_node("contact_check_node", contact_check_node)
 graph.add_node("contact_validation_node", contact_validation_node)
 graph.add_node("contact_store_node", contact_store_node)
 graph.add_node("reach_validation_node", reach_validation_node)
 graph.add_node("contact_node", contact_node)
-graph.add_node("conversation_validation_node", conversation_validation_node)
-graph.add_node("follow_up_node", follow_up_node)
+graph.add_node("Question Validation Node", question_validation_node)
+graph.add_node("Question Follow Up", question_follow_up_node)
 graph.add_node("chapter_check_node", chapter_check_node)
 graph.add_node("chapter_writer_node", chapter_writer_node)
 graph.add_node("chapter_save_node", chapter_save_node)
@@ -570,20 +786,24 @@ graph.add_conditional_edges(
 )
 
 graph.add_edge("Interview Question Prep", "Questioning Node")
-graph.add_conditional_edges(
-    "Interview Question Prep",
-    lambda x: "User Status Node",  # Define logic to route back if necessary
-    {
-        "User Status Node": "User Status Node",
-    }
-)
-graph.add_edge("Questioning Node", "contact_check_node")
+# graph.add_conditional_edges(
+#     "Interview Question Prep",
+#     lambda x: "User Status Node",  # Define logic to route back if necessary
+#     {
+#         "User Status Node": "User Status Node",
+#     }
+# )
+
+graph.add_edge("Questioning Node", "Questioning Response Node")
+graph.add_edge("Questioning Response Node", "contact_check_node")
+# graph.add_edge("Questioning Node", "contact_check_node")
+
 graph.add_conditional_edges(
     "contact_check_node",
-    lambda x: "contact_validation_node" if "someone" in x["messages"][-1].content else "conversation_validation_node",
+    lambda x: "contact_validation_node" if "someone" in x["messages"][-1].content else "Question Validation Node",
     {
         "contact_validation_node": "contact_validation_node",
-        "conversation_validation_node": "conversation_validation_node"
+        "Question Validation Node": "Question Validation Node"
     }
 )
 graph.add_conditional_edges(
@@ -596,16 +816,16 @@ graph.add_conditional_edges(
 )
 graph.add_edge("contact_store_node", "reach_validation_node")
 graph.add_edge("reach_validation_node", "contact_node")
-graph.add_edge("contact_node", "conversation_validation_node")
+graph.add_edge("contact_node", "Question Validation Node")
 graph.add_conditional_edges(
-    "conversation_validation_node",
-    lambda x: "follow_up_node" if "follow-up" in x["messages"][-1].content else "chapter_check_node",
+    "Question Validation Node",
+    lambda x: "Question Follow Up" if "follow-up" in x["messages"][-1].content else "chapter_check_node",
     {
-        "follow_up_node": "follow_up_node",
+        "Question Follow Up": "Question Follow Up",
         "chapter_check_node": "chapter_check_node"
     }
 )
-graph.add_edge("follow_up_node", "contact_check_node")
+graph.add_edge("Question Follow Up", "contact_check_node")
 graph.add_conditional_edges(
     "chapter_check_node",
     lambda x: "chapter_writer_node" if x.get("chapter_complete") else "Questioning Node",
@@ -617,6 +837,13 @@ graph.add_conditional_edges(
 graph.add_edge("chapter_writer_node", "chapter_save_node")
 graph.add_edge("chapter_save_node", "congratulations_node")
 graph.add_edge("congratulations_node", END)
+graph.add_conditional_edges( # I don't understand why this is needed but the graph doesn't compile without it. I moved it all the way to the end. Make sure to test this once the agent is finalized.
+    "congratulations_node",
+    lambda x: "User Status Node",  # Define logic to route back if necessary
+    {
+        "User Status Node": "User Status Node",
+    }
+)
 
 # Example configuration. Set "start_node" to "Interview Question Prep" to start with interview questions. Set "start_node" to "User Status Node" to start with the user's status.
 config = {"start_node": "User Status Node"}

@@ -6,5 +6,6 @@ langchain_community
 langchain_openai
 langchain
 langchain-core
+pytest
 
 

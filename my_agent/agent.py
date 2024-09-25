@@ -89,8 +89,6 @@ def set_entry_point_based_on_config(graph, config):
     start_node = config.get("start_node", "User Status Node")
     if start_node == "Interview Question Prep":
         graph.add_edge(START, "Interview Question Prep")
-    elif start_node == "Questioning Node":
-        graph.add_edge(START, "Questioning Node")
     else:
         graph.add_edge(START, "User Status Node")
 
@@ -851,8 +849,8 @@ graph.add_conditional_edges( # I don't understand why this is needed but the gra
     }
 )
 
-# Use the following line to change where the agent starts. For anything other than "User Status Node", set testing mode to True at top of file. Set "start_node" to "Interview Question Prep" to start with interview questions. Set to "Questioning Node" to start with the first predefined interview question. Set "start_node" to "User Status Node" to start with the user's status.
-config = {"start_node": "Questioning Node"}
+# Example configuration. Set "start_node" to "Interview Question Prep" to start with interview questions. Set "start_node" to "User Status Node" to start with the user's status.
+config = {"start_node": "User Status Node"}
 
 
 # Set the entry point before compiling

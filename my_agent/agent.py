@@ -619,7 +619,7 @@ graph.add_edge("chapter_save_node", "congratulations_node")
 graph.add_edge("congratulations_node", END)
 
 # Example configuration. Set "start_node" to "Interview Question Prep" to start with interview questions. Set "start_node" to "User Status Node" to start with the user's status.
-config = {"start_node": "Interview Question Prep"}
+config = {"start_node": "User Status Node"}
 
 
 # Set the entry point before compiling

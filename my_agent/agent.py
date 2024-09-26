@@ -1,13 +1,16 @@
 import json
 import os
+import logging
 from pydantic import BaseModel
 from langgraph.graph import StateGraph, MessagesState, START, END
 from langgraph.prebuilt import ToolNode
 from typing import List, Dict, Any, Literal, Union, Annotated, Set, TypedDict
 from langchain_core.messages import AIMessage, SystemMessage, HumanMessage
 from langchain_openai import ChatOpenAI
-import logging
+from langgraph.checkpoint.memory import MemorySaver
 
+
+memory = MemorySaver()
 # set true and true to run in testing mode
 TESTING_MODE = os.getenv("TESTING_MODE", "True") == "True"
 
@@ -89,6 +92,8 @@ def set_entry_point_based_on_config(graph, config):
     start_node = config.get("start_node", "User Status Node")
     if start_node == "Interview Question Prep":
         graph.add_edge(START, "Interview Question Prep")
+    elif start_node == "Questioning Node":
+        graph.add_edge(START, "Questioning Node")
     else:
         graph.add_edge(START, "User Status Node")
 
@@ -425,15 +430,17 @@ Follow-up question:"""
 
 def interview_question_prep_node(state: UserState):
     logger.info(f"interview_question_prep_node received state: {state}")
+    logger.info(f"Current state keys: {list(state.keys())}")
     logger.info(f"TESTING_MODE is set to: {TESTING_MODE}")
     if TESTING_MODE:
-        state.interview_questions = sample_interview  # Assuming sample_interview is loaded here
-        logger.info(f"Loaded {len(state.interview_questions)} sample interview questions for testing.")
+    # Safely get 'interview_questions' or initialize if missing
+        state["interview_questions"] = state.get("interview_questions", []) + sample_interview
+        logger.info(f"Loaded {len(state['interview_questions'])} sample interview questions for testing.")
     else:
-        profile_history = state.profile_history
+        profile_history = state["profile_history"]
         if not profile_history:
             logger.warning("No profile history found.")
-            return {"messages": state.messages + [SystemMessage(content="No profile data available.")]}
+            return {"messages": state["messages"] + [SystemMessage(content="No profile data available.")]}
         
         # Prepare the demographic profile as a string
         profile_string = "\n".join([f"Q: {qa['question']}\nA: {qa['answer']}" for qa in profile_history])
@@ -457,27 +464,27 @@ Based on this profile, generate 100-120 interview questions categorized into cha
                 ]
             )
             interview_data = json.loads(response.content)
-            state.interview_questions = interview_data
-            logger.info(f"Generated {len(state.interview_questions)} interview questions across chapters.")
+            state["interview_questions"] = interview_data
+            logger.info(f"Generated {len(state['interview_questions'])} interview questions across chapters.")
         except Exception as e:
             logger.error(f"Error generating interview questions: {e}")
-            state.interview_questions = []
+            state["interview_questions"] = []
     
     return {
-        "interview_questions": state.interview_questions,
-        "messages": state.messages + [SystemMessage(content="Interview questions prepared.")]
+        "interview_questions": state["interview_questions"],
+        "messages": state["messages"] + [SystemMessage(content="Interview questions prepared.")]
     }
 
 def questioning_node(state: UserState):
     logger.info(f"questioning_node received state: {state}")
-    interview_questions = state.interview_questions
-    chapter_index = state.current_chapter_index
-    question_index = state.current_question_index
+    interview_questions = state["interview_questions"]
+    chapter_index = state["current_chapter_index"]
+    question_index = state["current_question_index"]
 
     # Load sample questions in testing mode if not already loaded
     if TESTING_MODE and not interview_questions:
         from my_agent.sample_interview import sample_interview
-        state.interview_questions = sample_interview
+        state["interview_questions"] = sample_interview
         interview_questions = sample_interview
         logger.info("Loaded sample interview questions for testing mode.")
 
@@ -486,7 +493,7 @@ def questioning_node(state: UserState):
         closing_message = "Thank you for completing the interview."
         logger.info("All interview questions have been asked.")
         return {
-            "messages": state.messages + [AIMessage(content=closing_message)],
+            "messages": state["messages"] + [AIMessage(content=closing_message)],
             "awaiting_user_response": False
         }
 
@@ -496,39 +503,39 @@ def questioning_node(state: UserState):
     # Check if all questions in the current chapter have been asked
     if question_index >= len(questions):
         # Move to the next chapter
-        state.current_chapter_index += 1
-        state.current_question_index = 0
-        logger.info(f"Moving to next chapter: {interview_questions[state.current_chapter_index]['chapter']}")
+        state["current_chapter_index"] += 1
+        state["current_question_index"] = 0
+        logger.info(f"Moving to next chapter: {interview_questions[state['current_chapter_index']]['chapter']}")
         return questioning_node(state)
 
     next_question = questions[question_index]
 
     # Update state with the current question
-    state.current_question = {
+    state["current_question"] = {
         "chapter": current_chapter["chapter"],
         "question": next_question
     }
-    state.awaiting_user_response = True
-    state.current_question_index += 1
+    state["awaiting_user_response"] = True
+    state["current_question_index"] += 1
 
     logger.info(f"Asking interview question: {next_question}")
 
     return {
-        "messages": state.messages + [AIMessage(content=next_question)],
-        "current_question": state.current_question,
+        "messages": state["messages"] + [AIMessage(content=next_question)],
+        "current_question": state["current_question"],
         "awaiting_user_response": True
     }
 # Handle user responses by appending the question and answer to the conversation_history and preparing the next question.
 def questioning_response_node(state: UserState):
     logger.info(f"questioning_response_node received state: {state}")
-    if state.awaiting_user_response:
-        last_message = state.messages[-1]
+    if state["awaiting_user_response"]:
+        last_message = state["messages"][-1]
         if isinstance(last_message, HumanMessage):
-            user_response = last_message.content
-            current_question = state.current_question
+            user_response = last_message["content"]
+            current_question = state["current_question"]
 
             # Append the current question and user response to the conversation history
-            state.conversation_history.append({
+            state["conversation_history"].append({
                 "chapter": current_question.get("chapter", ""),
                 "question": current_question.get("question", ""),
                 "answer": user_response
@@ -536,7 +543,7 @@ def questioning_response_node(state: UserState):
             logger.info(f"Appended to conversation history: {current_question.get('question')} - {user_response}")
 
             # Reset awaiting response
-            state.awaiting_user_response = False
+            state["awaiting_user_response"] = False
 
     # Instead of proceeding to the next question, return the updated state
     return state
@@ -850,14 +857,14 @@ graph.add_conditional_edges( # I don't understand why this is needed but the gra
 )
 
 # Example configuration. Set "start_node" to "Interview Question Prep" to start with interview questions. Set "start_node" to "User Status Node" to start with the user's status.
-config = {"start_node": "User Status Node"}
+config = {"start_node": "Questioning Node"}
 
 
 # Set the entry point before compiling
 set_entry_point_based_on_config(graph, config)
 
 # Compile the graph with the configuration
-app = graph.compile(interrupt_before=["Profile Node"])
+app = graph.compile(interrupt_before=["Questioning Response Node"])
 
 # Prepare the input data
 input_data = {
@@ -866,9 +873,15 @@ input_data = {
     "agent_introduction_status": False,
     "profile_info_collected": False,
     "profile_history": [],
-    "current_question": "",
+    "interaction_history": [],
+    "conversation_history": [],
+    "current_question": {},
     "current_topic": "",
+    "current_chapter_index": 0,
+    "current_question_index": 0,
     "topics_covered": set(),
-    "follow_up_counts": {}
+    "follow_up_counts": {},
+    "interview_questions": [],          # Added Key
+    "awaiting_user_response": False     # Added Key
 }
 final_state = app.invoke(input=input_data)

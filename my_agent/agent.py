@@ -910,7 +910,9 @@ def initialize_biography_agent():
         "topics_covered": set(),
         "follow_up_counts": {},
         "interview_questions": [],
-        "awaiting_user_response": False
+        "awaiting_user_response": False,
+        "state": {},  # Added required 'state' field
+        "is_initial_interaction": True  # Added required 'is_initial_interaction' field
     }
 
     # Invoke the agent with initial input

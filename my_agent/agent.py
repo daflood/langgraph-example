@@ -231,7 +231,7 @@ Rephrased question:"""
             "current_topic": next_question['topic'],
             "awaiting_user_response": True,
             "profile_history": profile_history,
-            "topics_covered": list(topics_covered)
+            "topics_covered": topics_covered
         }
     else:
         # No more questions
@@ -239,7 +239,7 @@ Rephrased question:"""
         return {
             "messages": state["messages"] + [AIMessage(content=closing_message)],
             "profile_history": profile_history,
-            "topics_covered": list(topics_covered)
+            "topics_covered": topics_covered
         }
 
 def profile_completion_check_node(state: dict):
@@ -311,8 +311,12 @@ def profile_question_validation_node(state: dict):
 Question: {last_question}
 Answer: {last_answer}
 
-If the answer suggests an interesting area for further exploration, respond with 'Follow Up'.  
-Otherwise, respond with 'Complete'. 
+Use the following guidelines:
+1. If the answer is brief, deflective, or includes language that suggests the subject wants to move on (e.g., "That's all," "I don't know," "It's not important"), respond with 'Complete.'
+2. If the answer opens up an interesting or unexplored area and the subject shows engagement or enthusiasm, respond with 'Follow Up.'
+3. Avoid over-prompting follow-ups when the subject appears uninterested or finished with the topic.
+
+Based on these guidelines, respond with 'Follow Up' or 'Complete.'
 """
     
     try:
@@ -585,35 +589,30 @@ def question_validation_node(state: UserState):
     last_human_message = next((msg for msg in reversed(conversation_history) if isinstance(msg, HumanMessage)), None)
 
     # Initialize variables
-    last_question = ""
-    last_answer = ""
-
-    if last_ai_message:
-        last_question = last_ai_message.content
-    if last_human_message:
-        last_answer = last_human_message.content
+    last_question = last_ai_message.content if last_ai_message else ""
+    last_answer = last_human_message.content if last_human_message else ""
 
     if not last_question:
         logger.info("No last_question found. Skipping validation.")
         # Handle the case where there is no last_question
         return {
-            "messages": state["messages"],
-            "next_step": "Chapter Check Node"  # Or any appropriate default next step
+            "messages": state.messages,
+            "awaiting_user_response": False
         }
 
     logger.info(f"Last question: {last_question}")
     logger.info(f"Last answer: {last_answer}")
 
     # Update the interaction history
-    interaction_history = state.get("interaction_history", [])
+    interaction_history = state["interaction_history"]
     if last_question and last_answer:
         interaction_history.append({
             "question": last_question,
             "answer": last_answer
         })
         logger.info(f"Updated interaction history: {interaction_history}")
-
-    state["interaction_history"] = interaction_history
+        # Update the state with the new profile history
+        state["interaction_history"] = interaction_history
 
     # Determine if a follow-up question is appropriate
     prompt = f"""You are an intelligent agent conducting an interview. Based on the latest question and answer:
@@ -638,16 +637,31 @@ Ensure your response is either 'Follow Up' or 'Proceed to Chapter Check' with no
         decision = "proceed to chapter check"  # Default decision on error
 
     if "follow up" in decision:
-        next_step = "Question Follow Up Node"
+        next_step = "Question Follow Up"
+        awaiting_user_response = False
     else:
         next_step = "Chapter Check Node"
+        awaiting_user_response = False
 
     logger.info(f"Decision: {decision}, Next step: {next_step}")
+    
+    next_question = state.get("current_question", {})
+    # Update follow_up_counts in the state
+    follow_up_counts = state["follow_up_counts"]
 
+    # if "follow up" in decision:
+    #     follow_up_counts[next_question['topic']] = follow_up_counts.get(next_question['topic'], 0) + 1
+    #     state.follow_up_counts = follow_up_counts
+    if "follow up" in decision:
+        topic = next_question.get('topic', 'default_topic')
+        follow_up_counts[topic] = follow_up_counts.get(topic, 0) + 1
+        state["follow_up_counts"] = follow_up_counts
     return {
         "messages": state["messages"],
-        "next_step": next_step
+        "interaction_history": interaction_history,
+        "awaiting_user_response": awaiting_user_response
     }
+
 # Define the logic for the Question Validation Node
 def next_question_step(state):
     decision = state.get("next_step", "Chapter Check Node")
@@ -657,43 +671,52 @@ def next_question_step(state):
 def question_follow_up_node(state: UserState):
     logger.info(f"question_follow_up_node received state: {state}")
     logger.info("Conversation history in question_follow_up_node:")
-    for msg in state.messages:
+    for msg in state["messages"]:
         logger.info(f"  {type(msg).__name__}: {msg.content}")
 
-    # Determine the next follow-up question based on interaction history
-    interaction_history = state.conversation_history
-    last_interaction = interaction_history[-1] if interaction_history else None
-
+    # Generate a follow-up question using the LLM
+    last_interaction = state["interaction_history"][-1] if state["interaction_history"] else None
     if last_interaction:
         last_question = last_interaction["question"]
         last_answer = last_interaction["answer"]
+        current_chapter = state["current_question"]["chapter"]
         
-        # Generate a follow-up question using the LLM
         prompt = f"""Based on the previous interaction, generate a thoughtful follow-up question.
 
 Previous Question: {last_question}
 User's Answer: {last_answer}
+Current Chapter: {current_chapter}
 
 Follow-up Question:
 """
         try:
             follow_up_response = llm.invoke(prompt)
             follow_up_question = follow_up_response.content.strip()
+            logger.info(f"Generated follow-up question: {follow_up_question}")
         except Exception as e:
             logger.error(f"Error during LLM invocation for follow-up question: {e}")
             follow_up_question = "Can you tell me more about that?"
 
         # Update the state with the new question
-        state.current_question = {
-            "chapter": last_interaction["chapter"],
+        new_state = state.copy()  # Create a copy of the state
+        new_state["current_question"] = {
+            "chapter": current_chapter,
             "question": follow_up_question
         }
-        state.awaiting_user_response = True
-
-        # Return the updated state to be passed to questioning_response_node
-        return state
+        new_state["awaiting_user_response"] = True
+        new_state["messages"] = state["messages"] + [AIMessage(content=follow_up_question)]
+        
+        # Update interaction_history with the follow-up question
+        new_state["interaction_history"].append({
+            "question": follow_up_question,
+            "answer": ""  # This will be filled in the questioning_response_node
+        })
+        
+        logger.info(f"Updated state: {new_state}")
+        return new_state
     else:
         # No previous interaction, proceed to next step
+        logger.info("No previous interaction found, proceeding to next step")
         return {"next_step": "Chapter Check Node"}
 
 def chapter_check_node(state: BiographerState):
@@ -830,7 +853,7 @@ graph.add_edge("reach_validation_node", "contact_node")
 graph.add_edge("contact_node", "Question Validation Node")
 graph.add_conditional_edges(
     "Question Validation Node",
-    lambda x: "Question Follow Up" if "follow-up" in x["messages"][-1].content else "chapter_check_node",
+    lambda x: "Question Follow Up" if x["awaiting_user_response"] == False else "chapter_check_node",
     {
         "Question Follow Up": "Question Follow Up",
         "chapter_check_node": "chapter_check_node"
@@ -866,22 +889,52 @@ set_entry_point_based_on_config(graph, config)
 # Compile the graph with the configuration
 app = graph.compile(interrupt_before=["Questioning Response Node"])
 
-# Prepare the input data
-input_data = {
-    "messages": [],
-    "user_profile_status": False,
-    "agent_introduction_status": False,
-    "profile_info_collected": False,
-    "profile_history": [],
-    "interaction_history": [],
-    "conversation_history": [],
-    "current_question": {},
-    "current_topic": "",
-    "current_chapter_index": 0,
-    "current_question_index": 0,
-    "topics_covered": set(),
-    "follow_up_counts": {},
-    "interview_questions": [],          # Added Key
-    "awaiting_user_response": False     # Added Key
-}
-final_state = app.invoke(input=input_data)
+
+# Initialize and compile the Langgraph agent
+def initialize_biography_agent():
+    from .biographer_agent import biography_agent, compiled_graph  # Ensure proper import
+
+    # Prepare the input data
+    input_data = {
+        "messages": [],
+        "user_profile_status": False,
+        "agent_introduction_status": False,
+        "profile_info_collected": False,
+        "profile_history": [],
+        "interaction_history": [],
+        "conversation_history": [],
+        "current_question": {},
+        "current_topic": "",
+        "current_chapter_index": 0,
+        "current_question_index": 0,
+        "topics_covered": set(),
+        "follow_up_counts": {},
+        "interview_questions": [],
+        "awaiting_user_response": False
+    }
+
+    # Invoke the agent with initial input
+    final_state = compiled_graph.invoke(input=input_data)
+    logger.info(f"Initial agent state: {final_state}")
+    return biography_agent
+
+# This was the original code from the Langgraph studio file.
+# # Prepare the input data
+# input_data = {
+#     "messages": [],
+#     "user_profile_status": False,
+#     "agent_introduction_status": False,
+#     "profile_info_collected": False,
+#     "profile_history": [],
+#     "interaction_history": [],
+#     "conversation_history": [],
+#     "current_question": {},
+#     "current_topic": "",
+#     "current_chapter_index": 0,
+#     "current_question_index": 0,
+#     "topics_covered": set(),
+#     "follow_up_counts": {},
+#     "interview_questions": [],          # Added Key
+#     "awaiting_user_response": False     # Added Key
+# }
+# final_state = app.invoke(input=input_data)

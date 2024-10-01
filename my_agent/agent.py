@@ -88,7 +88,8 @@ class UserState(MessagesState):
     interview_questions: List[Dict[str, Any]] = Field(default_factory=list)
     awaiting_user_response: bool = False
     is_initial_interaction: bool = True
-    messages: List[Dict[str, Any]] = Field(default_factory=list)
+    next_step: str = Field(default="")
+    # messages: List[Dict[str, Any]] = Field(default_factory=list)
     contacts: List[str]  # List of known contacts
     chapter_complete: bool  # Flag to indicate if a chapter is complete
 
@@ -540,6 +541,7 @@ def questioning_node(state):
     logger.debug(f"interview_questions: {interview_questions}")
 
     if TESTING_MODE and not interview_questions:
+        # change to my_agent.sample_interview
         from my_agent.sample_interview import sample_interview
         state["interview_questions"] = sample_interview
         interview_questions = sample_interview
@@ -588,7 +590,7 @@ def questioning_node(state):
         "state": state
     }
 
-# Handle user responses by appending the question and answer to the conversation_history and preparing the next question.
+# Handle user responses by appending the question and answer to the conversation_history and then move onto the contact check node.
 def questioning_response_node(state: UserState) -> Dict[str, Any]:
     logger.info(f"questioning_response_node received state: {state}")
     current_question = state.get("current_question", {})
@@ -610,17 +612,8 @@ def questioning_response_node(state: UserState) -> Dict[str, Any]:
             # Update state
             state["awaiting_user_response"] = False
 
-    # Determine if a follow-up question is needed
-    prompt = f"""Based on the user's response to the question "{current_question.get('question', '')}", 
-determine if a follow-up question is needed. Respond with 'Follow Up' if more information is needed, 
-or 'Next Question' if we should move to the next question."""
-
-    response = llm.invoke(prompt)
-    decision = response.content.strip().lower()
-
     updated_state = state.copy()
-    updated_state["next_node"] = "Follow Up Node" if "follow up" in decision else "Questioning Node"
-
+    
     return {
         "state": updated_state,
         "messages": updated_state["messages"],
@@ -632,12 +625,14 @@ def contact_check_node(state: UserState):
     return {
         "messages": state["messages"],
         "state": state,
-        "next_node": "Question Validation Node"
     }
 
 def contact_validation_node(state: UserState):
     logger.info(f"contact_validation_node received state: {state}")
-    return {"messages": state.messages + [SystemMessage(content="Validating contact.")]}
+    return {
+        "state": updated_state,
+        "messages": new_messages
+    }
 
 def contact_store_node(state: UserState) -> Dict[str, Any]:
     logger.info(f"contact_store_node received state: {state}")
@@ -667,12 +662,11 @@ def contact_node(state: UserState):
 
 def question_validation_node(state: UserState):
     logger.info(f"question_validation_node received state: {state}")
-    logger.info("Conversation history in question_validation_node:")
-    for msg in state["messages"]:
-        logger.info(f"  {type(msg).__name__}: {msg.content}")
 
+    # Create a copy of the state to update
+    updated_state = state.copy()
+    
     conversation_history = state["messages"]
-    last_message = conversation_history[-1] if conversation_history else None
 
     # Safely retrieve the last AI and Human messages
     last_ai_message = next((msg for msg in reversed(conversation_history) if isinstance(msg, AIMessage)), None)
@@ -683,26 +677,23 @@ def question_validation_node(state: UserState):
     last_answer = last_human_message.content if last_human_message else ""
 
     if not last_question:
-        logger.info("No last_question found. Skipping validation.")
-        # Handle the case where there is no last_question
+        logger.info("No last_question found. Proceeding to Chapter Check.")
+        updated_state["next_step"] = "chapter_check_node"
         return {
-            "messages": state.messages,
-            "awaiting_user_response": False
+            "state": updated_state,
+            "messages": []
         }
 
     logger.info(f"Last question: {last_question}")
     logger.info(f"Last answer: {last_answer}")
 
     # Update the interaction history
-    interaction_history = state["interaction_history"]
     if last_question and last_answer:
-        interaction_history.append({
+        updated_state["interaction_history"].append({
             "question": last_question,
             "answer": last_answer
         })
-        logger.info(f"Updated interaction history: {interaction_history}")
-        # Update the state with the new profile history
-        state["interaction_history"] = interaction_history
+        logger.info(f"Updated interaction history: {updated_state['interaction_history']}")
 
     # Determine if a follow-up question is appropriate
     prompt = f"""You are an intelligent agent conducting an interview. Based on the latest question and answer:
@@ -727,36 +718,32 @@ Ensure your response is either 'Follow Up' or 'Proceed to Chapter Check' with no
         decision = "proceed to chapter check"  # Default decision on error
 
     if "follow up" in decision:
-        next_step = "Question Follow Up"
-        awaiting_user_response = False
+        updated_state["next_step"] = "Question Follow Up"
     else:
-        next_step = "Chapter Check Node"
-        awaiting_user_response = False
+        updated_state["next_step"] = "Chapter Check Node"
 
-    logger.info(f"Decision: {decision}, Next step: {next_step}")
+    logger.info(f"Decision: {decision}, Next step: {updated_state['next_step']}")
     
-    next_question = state.get("current_question", {})
     # Update follow_up_counts in the state
-    follow_up_counts = state["follow_up_counts"]
-
-    # if "follow up" in decision:
-    #     follow_up_counts[next_question['topic']] = follow_up_counts.get(next_question['topic'], 0) + 1
-    #     state.follow_up_counts = follow_up_counts
+    current_question = updated_state.get("current_question", {})
+    topic = current_question.get('topic', 'default_topic')
     if "follow up" in decision:
-        topic = next_question.get('topic', 'default_topic')
-        follow_up_counts[topic] = follow_up_counts.get(topic, 0) + 1
-        state["follow_up_counts"] = follow_up_counts
+        updated_state["follow_up_counts"][topic] = updated_state["follow_up_counts"].get(topic, 0) + 1
+
+    # No new messages to send to the user from this node
+    new_messages = []
+
     return {
-        "messages": state["messages"],
-        "interaction_history": interaction_history,
-        "awaiting_user_response": awaiting_user_response
+        "state": updated_state,
+        "messages": new_messages
     }
 
-# Define the logic for the Question Validation Node
-def next_question_step(state):
-    decision = state.get("next_step", "Chapter Check Node")
-    logger.info(f"Next question step decision: {decision}")  # Add this line for debugging
-    return decision
+
+# No idea what this does. 
+# def next_question_step(state):
+#     decision = state.get("next_step", "Chapter Check Node")
+#     logger.info(f"Next question step decision: {decision}")  # Add this line for debugging
+#     return decision
 
 def question_follow_up_node(state: UserState):
     logger.info(f"question_follow_up_node received state: {state}")
@@ -788,30 +775,47 @@ Follow-up Question:
             follow_up_question = "Can you tell me more about that?"
 
         # Update the state with the new question
-        new_state = state.copy()  # Create a copy of the state
-        new_state["current_question"] = {
+        updated_state = state.copy()
+        updated_state["current_question"] = {
             "chapter": current_chapter,
             "question": follow_up_question
         }
-        new_state["awaiting_user_response"] = True
-        new_state["messages"] = state["messages"] + [AIMessage(content=follow_up_question)]
+        updated_state["awaiting_user_response"] = True
+        updated_state["messages"] = state["messages"] + [AIMessage(content=follow_up_question)]
         
         # Update interaction_history with the follow-up question
-        new_state["interaction_history"].append({
+        updated_state["interaction_history"].append({
             "question": follow_up_question,
             "answer": ""  # This will be filled in the questioning_response_node
         })
         
-        logger.info(f"Updated state: {new_state}")
-        return new_state
+        logger.info(f"Updated state: {updated_state}")
+        return {
+            "state": updated_state,
+            "messages": updated_state["messages"]
+        }
     else:
         # No previous interaction, proceed to next step
         logger.info("No previous interaction found, proceeding to next step")
-        return {"next_step": "Chapter Check Node"}
+        return {
+            "state": state,
+            "messages": state["messages"]
+        }
 
 def chapter_check_node(state: UserState):
     logger.info(f"chapter_check_node received state: {state}")
-    return {"messages": state.messages + [SystemMessage(content="Checking chapter status.")]}
+    
+    # Create a copy of the state to update
+    updated_state = state.copy()
+    
+    # Perform any necessary checks or updates here
+    # For example:
+    # updated_state['chapter_complete'] = check_if_chapter_complete(updated_state)
+    
+    return {
+        "state": updated_state,
+        "messages": state['messages']  # or updated_state['messages'] if you've modified messages
+    }
 
 def chapter_writer_node(state: UserState) -> Dict[str, Any]:
     logger.info(f"chapter_writer_node received state: {state}")
@@ -865,7 +869,7 @@ graph.add_node("reach_validation_node", reach_validation_node)
 graph.add_node("contact_node", contact_node)
 graph.add_node("Question Validation Node", question_validation_node)
 graph.add_node("Question Follow Up", question_follow_up_node)
-graph.add_node("chapter_check_node", chapter_check_node)
+graph.add_node("Chapter Check Node", chapter_check_node)
 graph.add_node("chapter_writer_node", chapter_writer_node)
 graph.add_node("chapter_save_node", chapter_save_node)
 graph.add_node("congratulations_node", congratulations_node)
@@ -954,17 +958,21 @@ graph.add_conditional_edges(
 graph.add_edge("contact_store_node", "reach_validation_node")
 graph.add_edge("reach_validation_node", "contact_node")
 graph.add_edge("contact_node", "Question Validation Node")
+
 graph.add_conditional_edges(
     "Question Validation Node",
-    lambda x: "Question Follow Up" if x["awaiting_user_response"] == False else "chapter_check_node",
+    lambda x: x["state"].get("next_step", "Chapter Check Node"),
     {
         "Question Follow Up": "Question Follow Up",
-        "chapter_check_node": "chapter_check_node"
+        "Chapter Check Node": "Chapter Check Node"
     }
 )
+# logging info for the conditional edge
+logger.info(f"Conditional edges added: {graph.edges}")
+
 graph.add_edge("Question Follow Up", "Questioning Response Node")
 graph.add_conditional_edges(
-    "chapter_check_node",
+    "Chapter Check Node",
     lambda x: "chapter_writer_node" if x.get("chapter_complete") else "Questioning Node",
     {
         "chapter_writer_node": "chapter_writer_node",

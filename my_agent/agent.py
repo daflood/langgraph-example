@@ -1,7 +1,7 @@
 import json
 import os
 import logging
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, MessagesState, START, END
 from langgraph.prebuilt import ToolNode
 from typing import List, Dict, Any, Literal, Union, Annotated, Set, TypedDict
@@ -14,7 +14,7 @@ memory = MemorySaver()
 # set true and true to run in testing mode
 TESTING_MODE = os.getenv("TESTING_MODE", "True") == "True"
 
-# # Use this code for testing in LangGraph Studio
+# Use this code for testing in LangGraph Studio
 # Import the sample profile and interview for testing
 from my_agent.sample_profile import sample_profile
 # logger.info(f"sample_profile contains {len(sample_profile)} items")
@@ -73,24 +73,25 @@ topics_and_questions = [
 
 # Define the state with a built-in `messages` key
 class UserState(MessagesState):
-    user_profile_status: bool
-    agent_introduction_status: bool
-    profile_info_collected: bool
-    profile_history: List[Dict[str, str]] = []
-    interaction_history: List[Dict[str, str]] = []  # Existing field for interaction history
-    conversation_history: List[Dict[str, str]] = []  # New field for conversation history
-    current_question: Dict[str, Any] = {}  # Updated to handle chapter and question
-    current_chapter_index: int = 0  # Tracks the current chapter
-    current_question_index: int = 0  # Tracks the current question within the chapter
-    topics_covered: Set[str] = set()
-    follow_up_counts: Dict[str, int] = {}
-    interview_questions: List[Dict[str, Any]] = []  # Existing field for interview questions
-    awaiting_user_response: bool = False  # Existing field
-
-# Define the state with a built-in messages key
-class BiographerState(MessagesState):
+    user_profile_status: bool = False
+    agent_introduction_status: bool = False
+    profile_info_collected: bool = False
+    profile_history: List[Dict[str, str]] = Field(default_factory=list)
+    interaction_history: List[Dict[str, str]] = Field(default_factory=list)
+    conversation_history: List[Dict[str, str]] = Field(default_factory=list)
+    current_question: Dict[str, Any] = Field(default_factory=dict)
+    current_topic: str = ""
+    current_chapter_index: int = 0
+    current_question_index: int = 0
+    topics_covered: Set[str] = Field(default_factory=set)
+    follow_up_counts: Dict[str, int] = Field(default_factory=dict)
+    interview_questions: List[Dict[str, Any]] = Field(default_factory=list)
+    awaiting_user_response: bool = False
+    is_initial_interaction: bool = True
+    messages: List[Dict[str, Any]] = Field(default_factory=list)
     contacts: List[str]  # List of known contacts
     chapter_complete: bool  # Flag to indicate if a chapter is complete
+
 
    # Define a new configuration schema if needed
 class Config(TypedDict):
@@ -105,6 +106,38 @@ def set_entry_point_based_on_config(graph, config):
         graph.add_edge(START, "Questioning Node")
     else:
         graph.add_edge(START, "User Status Node")
+
+#This is the single entry point for processing incoming messages
+def process_message(input_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Processes the incoming message and updates the state.
+    
+    Args:
+        input_data (Dict[str, Any]): Contains 'messages' and 'state'.
+    
+    Returns:
+        Dict[str, Any]: Updated 'messages' and 'state'.
+    """
+    try:
+        # Invoke the compiled graph with input data
+        result = app.invoke(input=input_data)
+        
+        # Extract updated state and messages
+        updated_state = result.get("state", {})
+        new_messages = result.get("messages", [])
+        
+        return {
+            "state": updated_state,
+            "messages": new_messages
+        }
+    except Exception as e:
+        logger.exception(f"Error processing message in agent: {e}")
+        return {
+            "state": input_data.get("state", {}),
+            "messages": [
+                SystemMessage(content="An error occurred while processing your message.")
+            ]
+        }
 
 # Define the logic for each node
 def user_status_node(state: UserState):
@@ -134,7 +167,7 @@ def agent_introduction_check_node(state: UserState):
     logger.info(f"agent_introduction_check_node received state: {state}")
     return {"messages": state["messages"] + [SystemMessage(content="Checking if agent introduction is needed.")]}
 
-def agent_introduction_node(state: UserState):
+def agent_introduction_node(state: UserState) -> Dict[str, Any]:
     logger.info(f"agent_introduction_node received state: {state}")
     
     introduction = (
@@ -144,12 +177,19 @@ def agent_introduction_node(state: UserState):
         "Let's begin this journey of self-discovery and storytelling."
     )
     
+    # Update the state
+    updated_state = state.copy()
+    updated_state["agent_introduction_status"] = True
+    
+    # Prepare messages
+    new_messages = updated_state["messages"] + [
+        SystemMessage(content="Agent is introducing itself as a virtual biographer."),
+        AIMessage(content=introduction)
+    ]
+    
     return {
-        "agent_introduction_status": True,
-        "messages": state["messages"] + [
-            SystemMessage(content="Agent is introducing itself as a virtual biographer."),
-            AIMessage(content=introduction)
-        ]
+        "state": updated_state,
+        "messages": new_messages
     }
 
 def profile_check_node(state: UserState):
@@ -488,135 +528,142 @@ Based on this profile, generate 100-120 interview questions categorized into cha
         "messages": state["messages"] + [SystemMessage(content="Interview questions prepared.")]
     }
 
-def questioning_node(state: UserState):
+def questioning_node(state):
     logger.info(f"questioning_node received state: {state}")
     
-    # Safely retrieve values from state, providing defaults if not present
     chapter_index = state.get("current_chapter_index", 0)
     question_index = state.get("current_question_index", 0)
     interview_questions = state.get("interview_questions", [])
 
-    # Debugging Logs
     logger.debug(f"chapter_index: {chapter_index}")
     logger.debug(f"question_index: {question_index}")
     logger.debug(f"interview_questions: {interview_questions}")
 
-    # Load sample questions in testing mode if not already loaded
     if TESTING_MODE and not interview_questions:
         from my_agent.sample_interview import sample_interview
         state["interview_questions"] = sample_interview
         interview_questions = sample_interview
         logger.info("Loaded sample interview questions for testing mode.")
-
-    # Ensure chapter_index is an integer
-    if not isinstance(chapter_index, int):
-        logger.error(f"Invalid type for chapter_index: {type(chapter_index)}. Resetting to 0.")
-        chapter_index = 0
-        state["current_chapter_index"] = chapter_index
-
-    # Ensure question_index is an integer
-    if not isinstance(question_index, int):
-        logger.error(f"Invalid type for question_index: {type(question_index)}. Resetting to 0.")
-        question_index = 0
-        state["current_question_index"] = question_index
-
-    # Ensure interview_questions is a list
-    if not isinstance(interview_questions, list):
-        logger.error(f"Invalid type for interview_questions: {type(interview_questions)}. Initializing to empty list.")
-        interview_questions = []
-        state["interview_questions"] = interview_questions
-
-    # Prevent comparison if interview_questions is empty
+    
     if not interview_questions:
         logger.warning("No interview questions available.")
         return {
             "messages": state["messages"] + [SystemMessage(content="No interview questions available.")],
-            "awaiting_user_response": False
+            "awaiting_user_response": False,
+            "state": state
         }
 
-    # Comparison to check if all chapters have been covered
     if chapter_index >= len(interview_questions):
-        closing_message = "Thank you for completing the interview."
-        logger.info("All interview questions have been asked.")
+        logger.info("All chapters completed.")
         return {
-            "messages": state["messages"] + [AIMessage(content=closing_message)],
-            "awaiting_user_response": False
+            "messages": state["messages"] + [SystemMessage(content="Interview completed.")],
+            "awaiting_user_response": False,
+            "state": state
         }
 
-    current_chapter = state["interview_questions"][state["current_chapter_index"]]
+    current_chapter = interview_questions[chapter_index]
     questions = current_chapter.get("questions", [])
 
-    if state["current_question_index"] >= len(questions):
-        # Move to the next chapter
-        state["current_chapter_index"] += 1
+    if question_index >= len(questions):
+        logger.info("Moving to next chapter.")
+        state["current_chapter_index"] = chapter_index + 1
         state["current_question_index"] = 0
-        if state["current_chapter_index"] >= len(state["interview_questions"]):
-            return {
-                "messages": state["messages"] + [AIMessage(content="Thank you for completing the interview.")],
-                "awaiting_user_response": False
-            }
-        current_chapter = state["interview_questions"][state["current_chapter_index"]]
-        questions = current_chapter.get("questions", [])
+        return questioning_node(state)
 
-    next_question = questions[state["current_question_index"]]
-    state["current_question"] = {
+    next_question = questions[question_index]
+    current_question = {
         "chapter": current_chapter.get("chapter", ""),
         "question": next_question
     }
+
+    state["current_chapter_index"] = chapter_index
+    state["current_question_index"] = question_index + 1
+    state["current_question"] = current_question
     state["awaiting_user_response"] = True
-    state["current_question_index"] += 1
 
     return {
-        "messages": state["messages"] + [AIMessage(content=next_question)],
-        "current_question": state["current_question"],
+        "messages": [AIMessage(content=next_question)],
+        "current_question": current_question,
         "awaiting_user_response": True,
         "state": state
     }
+
 # Handle user responses by appending the question and answer to the conversation_history and preparing the next question.
-def questioning_response_node(state: UserState):
+def questioning_response_node(state: UserState) -> Dict[str, Any]:
     logger.info(f"questioning_response_node received state: {state}")
-    if state["awaiting_user_response"]:
+    current_question = state.get("current_question", {})
+    
+    if state.get("awaiting_user_response", False):
         last_message = state["messages"][-1]
         if isinstance(last_message, HumanMessage):
-            user_response = last_message["content"]
-            current_question = state["current_question"]
+            user_response = last_message.content
 
-            # Append the current question and user response to the conversation history
-            state["conversation_history"].append({
+            # Update conversation_history
+            conversation_entry = {
                 "chapter": current_question.get("chapter", ""),
                 "question": current_question.get("question", ""),
                 "answer": user_response
-            })
+            }
+            state["conversation_history"].append(conversation_entry)
             logger.info(f"Appended to conversation history: {current_question.get('question')} - {user_response}")
 
-            # Reset awaiting response
+            # Update state
             state["awaiting_user_response"] = False
 
-    # Instead of proceeding to the next question, return the updated state
-    return state
+    # Determine if a follow-up question is needed
+    prompt = f"""Based on the user's response to the question "{current_question.get('question', '')}", 
+determine if a follow-up question is needed. Respond with 'Follow Up' if more information is needed, 
+or 'Next Question' if we should move to the next question."""
 
-def contact_check_node(state: BiographerState):
-    logger.info(f"contact_check_node received state: {state}")
-    return {"messages": state["messages"] + [SystemMessage(content="Checking for contacts.")]}
+    response = llm.invoke(prompt)
+    decision = response.content.strip().lower()
 
-def contact_validation_node(state: BiographerState):
-    logger.info(f"contact_validation_node received state: {state}")
-    return {"messages": state["messages"] + [SystemMessage(content="Validating contact.")]}
+    updated_state = state.copy()
+    updated_state["next_node"] = "Follow Up Node" if "follow up" in decision else "Questioning Node"
 
-def contact_store_node(state: BiographerState):
-    logger.info(f"contact_store_node received state: {state}")
     return {
-        "contacts": state.get("contacts", []) + ["new_contact"],
-        "messages": state["messages"] + [SystemMessage(content="New contact stored.")]
+        "state": updated_state,
+        "messages": updated_state["messages"],
     }
 
-def reach_validation_node(state: BiographerState):
-    logger.info(f"reach_validation_node received state: {state}")
-    return {"messages": state["messages"] + [SystemMessage(content="Validating reach.")]}
+def contact_check_node(state: UserState):
+    logger.info(f"contact_check_node received state: {state}")
+    # Implement any contact checking logic here if needed
+    return {
+        "messages": state["messages"],
+        "state": state,
+        "next_node": "Question Validation Node"
+    }
 
-def contact_node(state: BiographerState):
+def contact_validation_node(state: UserState):
+    logger.info(f"contact_validation_node received state: {state}")
+    return {"messages": state.messages + [SystemMessage(content="Validating contact.")]}
+
+def contact_store_node(state: UserState) -> Dict[str, Any]:
+    logger.info(f"contact_store_node received state: {state}")
+
+    # Update contacts
+    updated_contacts = state.get("contacts", []) + ["new_contact"]
+    updated_state = state.copy()
+    updated_state["contacts"] = updated_contacts
+
+    # Prepare messages
+    new_messages = updated_state["messages"] + [
+        SystemMessage(content="New contact stored.")
+    ]
+
+    return {
+        "state": updated_state,
+        "messages": new_messages
+    }
+
+def reach_validation_node(state: UserState):
+    logger.info(f"reach_validation_node received state: {state}")
+    return {"messages": state.messages + [SystemMessage(content="Validating reach.")]}
+
+def contact_node(state: UserState):
     logger.info(f"contact_node received state: {state}")
-    return {"messages": state["messages"] + [SystemMessage(content="Contact processed.")]}
+    return {"messages": state.messages + [SystemMessage(content="Contact processed.")]}
 
 def question_validation_node(state: UserState):
     logger.info(f"question_validation_node received state: {state}")
@@ -762,24 +809,37 @@ Follow-up Question:
         logger.info("No previous interaction found, proceeding to next step")
         return {"next_step": "Chapter Check Node"}
 
-def chapter_check_node(state: BiographerState):
+def chapter_check_node(state: UserState):
     logger.info(f"chapter_check_node received state: {state}")
-    return {"messages": state["messages"] + [SystemMessage(content="Checking chapter status.")]}
+    return {"messages": state.messages + [SystemMessage(content="Checking chapter status.")]}
 
-def chapter_writer_node(state: BiographerState):
+def chapter_writer_node(state: UserState) -> Dict[str, Any]:
     logger.info(f"chapter_writer_node received state: {state}")
-    return {"messages": state["messages"] + [SystemMessage(content="Writing chapter...")]}
 
-def chapter_save_node(state: BiographerState):
+    # Example: Update state to indicate chapter writing
+    updated_state = state.copy()
+    updated_state["is_writing_chapter"] = True
+
+    # Prepare messages
+    new_messages = updated_state["messages"] + [
+        SystemMessage(content="Writing chapter...")
+    ]
+
+    return {
+        "state": updated_state,
+        "messages": new_messages
+    }
+
+def chapter_save_node(state: UserState):
     logger.info(f"chapter_save_node received state: {state}")
     return {
         "chapter_complete": True,
-        "messages": state["messages"] + [SystemMessage(content="Saving chapter...")]
+        "messages": state.messages + [SystemMessage(content="Saving chapter...")]
     }
 
-def congratulations_node(state: BiographerState):
+def congratulations_node(state: UserState):
     logger.info(f"congratulations_node received state: {state}")
-    return {"messages": state["messages"] + [SystemMessage(content="Congratulations!")]}
+    return {"messages": state.messages + [SystemMessage(content="Congratulations!")]}
 
 # Create the state graph
 graph = StateGraph(UserState)
@@ -934,19 +994,44 @@ app = graph.compile(interrupt_before=["Questioning Response Node"])
 
 
 def agent_with_state(input_data):
-    state = UserState(**input_data.get("state", {}))
-    messages = input_data.get("messages", [])
+    # Initialize state with default values, including an empty messages list
+    default_state = {
+        "messages": [],
+        "user_profile_status": False,
+        "agent_introduction_status": False,
+        "profile_info_collected": False,
+        "profile_history": [],
+        "interaction_history": [],
+        "conversation_history": [],
+        "current_question": {},
+        "current_topic": "",
+        "current_chapter_index": 0,
+        "current_question_index": 0,
+        "topics_covered": set(),
+        "follow_up_counts": {},
+        "interview_questions": [],
+        "awaiting_user_response": False,
+        "is_initial_interaction": True
+    }
     
-    # Process the input with your agent logic
-    result = questioning_node(state)
+    # Update default_state with input_data
+    if isinstance(input_data.get("state"), dict):
+        default_state.update(input_data["state"])
+    elif input_data.get("state") == "state":
+        # Handle the case where state is the string "state"
+        pass  # You might want to log this or handle it differently
     
-    # Update the messages with any new ones from the result
-    messages.extend(result.get("messages", []))
+    # Keep state as a dictionary
+    state = default_state
+    
+    # Update messages from input_data
+    state["messages"] = input_data.get("messages", [])
     
     return {
-        "messages": messages,
-        "state": result.get("state", state)
+        "messages": state["messages"],
+        "state": state  # Keep state as a dictionary
     }
+ 
  
 def initialize_biography_agent():
      global app

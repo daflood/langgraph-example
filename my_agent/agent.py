@@ -14,14 +14,23 @@ memory = MemorySaver()
 # set true and true to run in testing mode
 TESTING_MODE = os.getenv("TESTING_MODE", "True") == "True"
 
+# # Use this code for testing in LangGraph Studio
 # Import the sample profile and interview for testing
 from my_agent.sample_profile import sample_profile
 # logger.info(f"sample_profile contains {len(sample_profile)} items")
 from my_agent.sample_interview import sample_interview
 
+# # Use relative imports
+# from .sample_profile import sample_profile
+# # logger.info(f"sample_profile contains {len(sample_profile)} items")
+# from .sample_interview import sample_interview
+
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Global variable to store the compiled graph
+app = None
 
 # Initialize the OpenAI model
 llm = ChatOpenAI(model="gpt-4", temperature=0)
@@ -481,9 +490,16 @@ Based on this profile, generate 100-120 interview questions categorized into cha
 
 def questioning_node(state: UserState):
     logger.info(f"questioning_node received state: {state}")
-    interview_questions = state["interview_questions"]
-    chapter_index = state["current_chapter_index"]
-    question_index = state["current_question_index"]
+    
+    # Safely retrieve values from state, providing defaults if not present
+    chapter_index = state.get("current_chapter_index", 0)
+    question_index = state.get("current_question_index", 0)
+    interview_questions = state.get("interview_questions", [])
+
+    # Debugging Logs
+    logger.debug(f"chapter_index: {chapter_index}")
+    logger.debug(f"question_index: {question_index}")
+    logger.debug(f"interview_questions: {interview_questions}")
 
     # Load sample questions in testing mode if not already loaded
     if TESTING_MODE and not interview_questions:
@@ -492,7 +508,33 @@ def questioning_node(state: UserState):
         interview_questions = sample_interview
         logger.info("Loaded sample interview questions for testing mode.")
 
-    # Check if all chapters have been covered
+    # Ensure chapter_index is an integer
+    if not isinstance(chapter_index, int):
+        logger.error(f"Invalid type for chapter_index: {type(chapter_index)}. Resetting to 0.")
+        chapter_index = 0
+        state["current_chapter_index"] = chapter_index
+
+    # Ensure question_index is an integer
+    if not isinstance(question_index, int):
+        logger.error(f"Invalid type for question_index: {type(question_index)}. Resetting to 0.")
+        question_index = 0
+        state["current_question_index"] = question_index
+
+    # Ensure interview_questions is a list
+    if not isinstance(interview_questions, list):
+        logger.error(f"Invalid type for interview_questions: {type(interview_questions)}. Initializing to empty list.")
+        interview_questions = []
+        state["interview_questions"] = interview_questions
+
+    # Prevent comparison if interview_questions is empty
+    if not interview_questions:
+        logger.warning("No interview questions available.")
+        return {
+            "messages": state["messages"] + [SystemMessage(content="No interview questions available.")],
+            "awaiting_user_response": False
+        }
+
+    # Comparison to check if all chapters have been covered
     if chapter_index >= len(interview_questions):
         closing_message = "Thank you for completing the interview."
         logger.info("All interview questions have been asked.")
@@ -501,33 +543,34 @@ def questioning_node(state: UserState):
             "awaiting_user_response": False
         }
 
-    current_chapter = interview_questions[chapter_index]
-    questions = current_chapter["questions"]
+    current_chapter = state["interview_questions"][state["current_chapter_index"]]
+    questions = current_chapter.get("questions", [])
 
-    # Check if all questions in the current chapter have been asked
-    if question_index >= len(questions):
+    if state["current_question_index"] >= len(questions):
         # Move to the next chapter
         state["current_chapter_index"] += 1
         state["current_question_index"] = 0
-        logger.info(f"Moving to next chapter: {interview_questions[state['current_chapter_index']]['chapter']}")
-        return questioning_node(state)
+        if state["current_chapter_index"] >= len(state["interview_questions"]):
+            return {
+                "messages": state["messages"] + [AIMessage(content="Thank you for completing the interview.")],
+                "awaiting_user_response": False
+            }
+        current_chapter = state["interview_questions"][state["current_chapter_index"]]
+        questions = current_chapter.get("questions", [])
 
-    next_question = questions[question_index]
-
-    # Update state with the current question
+    next_question = questions[state["current_question_index"]]
     state["current_question"] = {
-        "chapter": current_chapter["chapter"],
+        "chapter": current_chapter.get("chapter", ""),
         "question": next_question
     }
     state["awaiting_user_response"] = True
     state["current_question_index"] += 1
 
-    logger.info(f"Asking interview question: {next_question}")
-
     return {
         "messages": state["messages"] + [AIMessage(content=next_question)],
         "current_question": state["current_question"],
-        "awaiting_user_response": True
+        "awaiting_user_response": True,
+        "state": state
     }
 # Handle user responses by appending the question and answer to the conversation_history and preparing the next question.
 def questioning_response_node(state: UserState):
@@ -890,35 +933,62 @@ set_entry_point_based_on_config(graph, config)
 app = graph.compile(interrupt_before=["Questioning Response Node"])
 
 
-# Initialize and compile the Langgraph agent
-def initialize_biography_agent():
-    from .biographer_agent import biography_agent, compiled_graph  # Ensure proper import
-
-    # Prepare the input data
-    input_data = {
-        "messages": [],
-        "user_profile_status": False,
-        "agent_introduction_status": False,
-        "profile_info_collected": False,
-        "profile_history": [],
-        "interaction_history": [],
-        "conversation_history": [],
-        "current_question": {},
-        "current_topic": "",
-        "current_chapter_index": 0,
-        "current_question_index": 0,
-        "topics_covered": set(),
-        "follow_up_counts": {},
-        "interview_questions": [],
-        "awaiting_user_response": False,
-        "state": {},  # Added required 'state' field
-        "is_initial_interaction": True  # Added required 'is_initial_interaction' field
+def agent_with_state(input_data):
+    state = UserState(**input_data.get("state", {}))
+    messages = input_data.get("messages", [])
+    
+    # Process the input with your agent logic
+    result = questioning_node(state)
+    
+    # Update the messages with any new ones from the result
+    messages.extend(result.get("messages", []))
+    
+    return {
+        "messages": messages,
+        "state": result.get("state", state)
     }
+ 
+def initialize_biography_agent():
+     global app
+     # Prepare the input data
+     input_data = {
+         "messages": [],
+         "user_profile_status": False,
+         "agent_introduction_status": False,
+         "profile_info_collected": False,
+         "profile_history": [],
+         "interaction_history": [],
+         "conversation_history": [],
+         "current_question": {},
+         "current_topic": "",
+         "current_chapter_index": 0,
+         "current_question_index": 0,
+         "topics_covered": set(),
+         "follow_up_counts": {},
+         "interview_questions": [],
+         "awaiting_user_response": False,
+         "state": {},
+         "is_initial_interaction": True
+     }
+ 
+     # Compile the graph and store it in the global variable
+     app = graph.compile(interrupt_before=["Questioning Response Node"])
+ 
+     # Invoke the agent with initial input
+     final_state = app.invoke(input=input_data)
+     logger.info(f"Initial agent state: {final_state}")
+ 
+     return agent_with_state
+ 
+ # Initialize the agent
+biography_agent = initialize_biography_agent()
+# This worked in langchain studio following code was added for django
+    # # Invoke the agent with initial input
+    # final_state = compiled_graph.invoke(input=input_data)
+    # logger.info(f"Initial agent state: {final_state}")
+    # return biography_agent
 
-    # Invoke the agent with initial input
-    final_state = compiled_graph.invoke(input=input_data)
-    logger.info(f"Initial agent state: {final_state}")
-    return biography_agent
+
 
 # This was the original code from the Langgraph studio file.
 # # Prepare the input data

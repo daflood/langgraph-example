@@ -486,52 +486,63 @@ def interview_question_prep_node(state: UserState):
     logger.info(f"interview_question_prep_node received state: {state}")
     logger.info(f"Current state keys: {list(state.keys())}")
     logger.info(f"TESTING_MODE is set to: {TESTING_MODE}")
+
+    updated_state = state.copy()  # Create a copy of the state to modify
+
     if TESTING_MODE:
-    # Safely get 'interview_questions' or initialize if missing
-        state["interview_questions"] = state.get("interview_questions", []) + sample_interview
-        logger.info(f"Loaded {len(state['interview_questions'])} sample interview questions for testing.")
+        # Load sample interview questions for testing
+        from my_agent.sample_interview import sample_interview
+        updated_state["interview_questions"] = sample_interview
+        logger.info(f"Loaded {len(sample_interview)} sample interview questions for testing.")
+        messages = updated_state.get("messages", []) + [SystemMessage(content="Sample interview questions loaded for testing.")]
     else:
-        profile_history = state["profile_history"]
+        profile_history = updated_state.get("profile_history", [])
         if not profile_history:
             logger.warning("No profile history found.")
-            return {"messages": state["messages"] + [SystemMessage(content="No profile data available.")]}
-        
-        # Prepare the demographic profile as a string
-        profile_string = "\n".join([f"Q: {qa['question']}\nA: {qa['answer']}" for qa in profile_history])
-        
-        # Prepare the system prompt
-        system_prompt = """You are an expert biographer working on a 6 to 12 chapter biography. You have been provided a complete demographic profile of the subject based on previous question and answer sessions. Prepare about 100-120 interview questions based on that demographic profile. Favor open-ended questions to encourage detailed responses. Be respectful of sensitive topics. Categorize questions into chapters."""
-        
-        # Prepare the user prompt
-        user_prompt = f"""Here is the demographic profile of the subject:
-        
-{profile_string}
+            messages = updated_state.get("messages", []) + [SystemMessage(content="No profile data available.")]
+        else:
+            # Prepare the demographic profile as a string
+            profile_string = "\n".join([f"Q: {qa['question']}\nA: {qa['answer']}" for qa in profile_history])
+            
+            # Prepare the system prompt
+            system_prompt = """You are an expert biographer working on a 6 to 12 chapter biography. You have been provided a complete demographic profile of the subject based on previous question and answer sessions. Prepare about 100-120 interview questions based on that demographic profile. Favor open-ended questions to encourage detailed responses. Be respectful of sensitive topics. Categorize questions into chapters."""
+            
+            # Prepare the user prompt
+            user_prompt = f"""Here is the demographic profile of the subject:
+            
+    {profile_string}
 
-Based on this profile, generate 100-120 interview questions categorized into chapters. Please format your response as a JSON array of objects, where each object has a 'chapter' field and a 'questions' field containing an array of questions for that chapter."""
-        
-        # Generate interview questions using the LLM
-        try:
-            response = llm.invoke(
-                [
-                    SystemMessage(content=system_prompt),
-                    HumanMessage(content=user_prompt)
-                ]
-            )
-            interview_data = json.loads(response.content)
-            state["interview_questions"] = interview_data
-            logger.info(f"Generated {len(state['interview_questions'])} interview questions across chapters.")
-        except Exception as e:
-            logger.error(f"Error generating interview questions: {e}")
-            state["interview_questions"] = []
-    
+    Based on this profile, generate 100-120 interview questions categorized into chapters. Please format your response as a JSON array of objects, where each object has a 'chapter' field and a 'questions' field containing an array of questions for that chapter."""
+            
+            # Generate interview questions using the LLM
+            try:
+                response = llm.invoke(
+                    [
+                        SystemMessage(content=system_prompt),
+                        HumanMessage(content=user_prompt)
+                    ]
+                )
+                interview_data = json.loads(response.content)
+                updated_state["interview_questions"] = interview_data
+                logger.info(f"Generated {len(updated_state['interview_questions'])} interview questions across chapters.")
+                messages = updated_state.get("messages", []) + [SystemMessage(content="Interview questions prepared.")]
+            except Exception as e:
+                logger.error(f"Error generating interview questions: {e}")
+                updated_state["interview_questions"] = []
+                messages = updated_state.get("messages", []) + [SystemMessage(content="Failed to prepare interview questions.")]
+
+    # Log the updated state for debugging
+    logger.info(f"Updated state after interview_question_prep_node: {updated_state}")
+
     return {
-        "interview_questions": state["interview_questions"],
-        "messages": state["messages"] + [SystemMessage(content="Interview questions prepared.")]
+        "state": updated_state,
+        "messages": messages
     }
 
 def questioning_node(state):
     logger.info(f"questioning_node received state: {state}")
-    
+    logger.info(f"interview_questions in questioning_node: {state.get('interview_questions', [])}")
+
     chapter_index = state.get("current_chapter_index", 0)
     question_index = state.get("current_question_index", 0)
     interview_questions = state.get("interview_questions", [])
@@ -540,12 +551,13 @@ def questioning_node(state):
     logger.debug(f"question_index: {question_index}")
     logger.debug(f"interview_questions: {interview_questions}")
 
-    if TESTING_MODE and not interview_questions:
-        # change to my_agent.sample_interview
-        from my_agent.sample_interview import sample_interview
-        state["interview_questions"] = sample_interview
-        interview_questions = sample_interview
-        logger.info("Loaded sample interview questions for testing mode.")
+    # This code was messing up the node. Moving the loading of the sample interview to the interview_question_prep_node
+    # if TESTING_MODE and not interview_questions:
+    #     # remove my_agent from .sample_interview for django
+    #     from .sample_interview import sample_interview
+    #     state["interview_questions"] = sample_interview
+    #     interview_questions = sample_interview
+    #     logger.info("Loaded sample interview questions for testing mode.")
     
     if not interview_questions:
         logger.warning("No interview questions available.")
@@ -554,6 +566,9 @@ def questioning_node(state):
             "awaiting_user_response": False,
             "state": state
         }
+    if chapter_index is None:
+        chapter_index = 0
+        state["current_chapter_index"] = 0
 
     if chapter_index >= len(interview_questions):
         logger.info("All chapters completed.")
@@ -991,7 +1006,7 @@ graph.add_conditional_edges( # I don't understand why this is needed but the gra
 )
 
 # Example configuration. Set "start_node" to "Interview Question Prep" to start with interview questions. Set "start_node" to "User Status Node" to start with the user's status.
-config = {"start_node": "Questioning Node"}
+config = {"start_node": "Interview Question Prep"}
 
 
 # Set the entry point before compiling
